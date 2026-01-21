@@ -31,6 +31,8 @@ class Canvas(QWidget):
         self.canvas_objects = []
         self.selected_object = None
         self.dragging_object = False
+        self.selecting_text = False
+        self.resizing_object = False
         self.is_animating = False
         
         # Buffers de Renderizado (El corazón del sistema)
@@ -136,6 +138,8 @@ class Canvas(QWidget):
                 canvas_objects.draw_window(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
             elif t == "texto":
                 canvas_objects.draw_text_object(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, config.TEXT_COLOR, full_solids_blur)
+            elif t == "markdown":
+                canvas_objects.draw_markdown_object(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
         sp.end()
         
         # --- CAPA 4: DESENFOQUE FINAL PARA UI (Contiene TODO) ---
@@ -175,11 +179,28 @@ class Canvas(QWidget):
 
     # --- EVENTOS ---
     def wheelEvent(self, event):
-        wx, wy = self.screen_to_world(event.position().x(), event.position().y())
+        pos = event.position()
+        wx, wy = self.screen_to_world(pos.x(), pos.y())
+        
+        # 1. Comprobar si estamos sobre un objeto markdown para hacer scroll
+        for obj in reversed(self.canvas_objects):
+            if obj["type"] == "markdown":
+                ox, oy = obj["x"], obj["y"]
+                # Detección precisa del área de contenido del markdown (300x400)
+                if abs(wx - ox) < 150 and abs(wy - oy) < 200:
+                    delta = event.angleDelta().y()
+                    current_scroll = obj.get("scroll_y", 0)
+                    # El scroll se aplica en sentido contrario al delta
+                    new_scroll = current_scroll - delta / 2
+                    obj["scroll_y"] = max(0, min(obj.get("max_scroll_y", 1000), new_scroll))
+                    self.update()
+                    return # Bloqueamos el zoom si estamos haciendo scroll
+
+        # 2. Si no es markdown, hacer el zoom normal del canvas
         self.zoom = max(self.min_zoom, min(self.max_zoom, self.zoom * (1.1 if event.angleDelta().y() > 0 else 0.9)))
         nx, ny = self.world_to_screen(wx, wy)
-        self.offset_x += event.position().x() - nx
-        self.offset_y += event.position().y() - ny
+        self.offset_x += pos.x() - nx
+        self.offset_y += pos.y() - ny
         self.update()
 
     def mousePressEvent(self, event):
@@ -204,21 +225,50 @@ class Canvas(QWidget):
                     self.update(); return
             if not self.current_circle_rect.contains(pos): self.circle_expanded = False; self._start_anim()
 
+        # 1. Comprobar si el clic es en el tirador de redimensionado del objeto seleccionado
+        if self.selected_object is not None:
+            obj = self.canvas_objects[self.selected_object]
+            wx, wy = self.screen_to_world(pos.x(), pos.y())
+            # Tamaño en mundo
+            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else obj.get("w_orig", 100))))
+            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else obj.get("h_orig", 100))))
+            
+            hx, hy = obj["x"] + ow/2, obj["y"] + oh/2
+            if abs(wx - hx) < (15/self.zoom) and abs(wy - hy) < (15/self.zoom):
+                self.resizing_object = True
+                self.drag_start_pos = pos
+                return
+
         # Canvas Objects
         wx, wy = self.screen_to_world(pos.x(), pos.y())
         for i in range(len(self.canvas_objects)-1, -1, -1):
             obj = self.canvas_objects[i]; ox, oy = obj["x"], obj["y"]
-            if (obj["type"] in ["cuadrado", "triangulo"] and abs(wx-ox)<50 and abs(wy-oy)<50) or (obj["type"]=="ventana" and abs(wx-ox)<100 and abs(wy-oy)<75):
+            
+            # Caso especial: Selección de texto en Markdown
+            if obj["type"] == "markdown":
+                mw, mh = obj.get("w", 300), obj.get("h", 400)
+                if abs(wx-ox)<(mw/2) and abs(wy-oy)<(mh/2):
+                    # Si pinchamos en el área de título (arriba), permitimos arrastrar el objeto
+                    if wy < (oy - mh/2 + 30 + 15): 
+                        self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
+                        self.update(); return
+                    
+                    # Si pinchamos en el contenido, iniciamos selección de texto
+                    lx = wx - (ox - mw/2 + 15)
+                    ly = wy - (oy - mh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                    hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
+                    obj["sel_start"] = hit_idx
+                    obj["sel_end"] = hit_idx
+                    self.selected_object = i
+                    self.selecting_text = True
+                    self.update(); return
+
+            # Colisión genérica basada en dimensiones reales
+            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else (obj.get("w_orig", 100) if obj["type"]=="imagen" else 100))))
+            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else (obj.get("h_orig", 100) if obj["type"]=="imagen" else 40))))
+            
+            if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
                 self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos; self.update(); return
-            if obj["type"] == "texto" and abs(wx-ox)<100 and abs(wy-oy)<20: # Área de detección generosa para texto
-                self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos; self.update(); return
-            if obj["type"] == "imagen":
-                # Colisión simple basada en el tamaño guardado del pixmap escalado
-                max_side = 300
-                scale = min(max_side / obj["w"], max_side / obj["h"])
-                hw, hh = (obj["w"] * scale) / 2, (obj["h"] * scale) / 2
-                if abs(wx-ox) < hw and abs(wy-oy) < hh:
-                    self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos; self.update(); return
         
         self.selected_object, self.dragging, self.last_mouse_pos = None, True, pos
 
@@ -240,12 +290,23 @@ class Canvas(QWidget):
         
         # Cambio de cursor según hover
         over_editable = False
+        over_resize = False
         for obj in self.canvas_objects:
             ox, oy = obj["x"], obj["y"]
-            if (obj["type"] == "ventana" and abs(wx-ox)<100 and abs(wy-oy)<75) or (obj["type"]=="texto" and abs(wx-ox)<100 and abs(wy-oy)<20):
+            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else 100)))
+            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else 40)))
+            
+            # Hover sobre el tirador de redimensionado
+            hx, hy = ox + ow/2, oy + oh/2
+            if abs(wx - hx) < (15/self.zoom) and abs(wy - hy) < (15/self.zoom):
+                over_resize = True; break
+
+            if (obj["type"] == "ventana" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)) or (obj["type"]=="texto" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)) or (obj["type"] == "markdown" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)):
                 over_editable = True; break
         
-        if over_editable:
+        if over_resize:
+            self.setCursor(Qt.SizeFDiagCursor)
+        elif over_editable:
             self.setCursor(Qt.IBeamCursor)
         elif dist < (config.TOOLBAR_HOVER_DISTANCE_COLLAPSE if self.toolbar_expanded else config.TOOLBAR_HOVER_DISTANCE_EXPAND):
             self.setCursor(Qt.ArrowCursor)
@@ -258,14 +319,50 @@ class Canvas(QWidget):
         if self.dragging:
             self.offset_x += pos.x() - self.last_mouse_pos.x(); self.offset_y += pos.y() - self.last_mouse_pos.y()
             self.last_mouse_pos = pos; self.update()
+        elif self.resizing_object:
+            pw_x, pw_y = self.screen_to_world(self.drag_start_pos.x(), self.drag_start_pos.y())
+            cw_x, cw_y = self.screen_to_world(pos.x(), pos.y())
+            obj = self.canvas_objects[self.selected_object]
+            
+            # Inicializar dimensiones si no existen
+            if "w" not in obj:
+                if obj["type"] in ["cuadrado", "triangulo"]: obj["w"], obj["h"] = 100, 100
+                elif obj["type"] == "ventana": obj["w"], obj["h"] = 200, 150
+                elif obj["type"] == "markdown": obj["w"], obj["h"] = 300, 400
+                elif obj["type"] == "texto": obj["w"], obj["h"] = 200, 40
+
+            dx = (cw_x - pw_x) * 2
+            dy = (cw_y - pw_y) * 2
+
+            if obj["type"] == "triangulo":
+                # Escala uniforme balanceada para el triángulo
+                delta = (dx + dy) / 2
+                obj["w"] = max(40, obj["w"] + delta)
+                obj["h"] = max(40, obj["h"] + delta)
+            else:
+                obj["w"] = max(50, obj["w"] + dx)
+                obj["h"] = max(30, obj["h"] + dy)
+            
+            self.drag_start_pos = pos; self.update()
         elif self.dragging_object:
             pw_x, pw_y = self.screen_to_world(self.drag_start_pos.x(), self.drag_start_pos.y())
             cw_x, cw_y = self.screen_to_world(pos.x(), pos.y())
             self.canvas_objects[self.selected_object]["x"] += cw_x - pw_x
             self.canvas_objects[self.selected_object]["y"] += cw_y - pw_y
             self.drag_start_pos = pos; self.update()
+        elif getattr(self, "selecting_text", False) and self.selected_object is not None:
+            obj = self.canvas_objects[self.selected_object]
+            if obj["type"] == "markdown":
+                mw, mh = obj.get("w", 300), obj.get("h", 400)
+                lx = wx - (obj["x"] - mw/2 + 15)
+                ly = wy - (obj["y"] - mh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
+                obj["sel_end"] = hit_idx
+                self.update()
 
-    def mouseReleaseEvent(self, event): self.dragging = self.dragging_object = False
+    def mouseReleaseEvent(self, event): 
+        self.dragging = self.dragging_object = self.resizing_object = False
+        self.selecting_text = False
 
     # --- DRAG & DROP ---
     def dragEnterEvent(self, event):
@@ -279,7 +376,8 @@ class Canvas(QWidget):
         count = 0
         for url in urls:
             path = url.toLocalFile()
-            if path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
+            ext = path.lower()
+            if ext.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
                 wx, wy = self.screen_to_world(pos.x() + count*20, pos.y() + count*20)
                 pixmap = QPixmap(path)
                 if not pixmap.isNull():
@@ -294,6 +392,24 @@ class Canvas(QWidget):
                     }
                     self.canvas_objects.append(new_obj)
                     count += 1
+            elif ext.endswith('.md'):
+                wx, wy = self.screen_to_world(pos.x() + count*20, pos.y() + count*20)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    new_obj = {
+                        "type": "markdown",
+                        "x": wx,
+                        "y": wy,
+                        "path": path,
+                        "content": content,
+                        "title": path.split('/')[-1]
+                    }
+                    self.canvas_objects.append(new_obj)
+                    count += 1
+                except Exception as e:
+                    print(f"Error reading md file: {e}")
         
         if count > 0: self.update()
 
