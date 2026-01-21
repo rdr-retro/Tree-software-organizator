@@ -29,10 +29,12 @@ class Canvas(QWidget):
         
         # Objects
         self.canvas_objects = []
-        self.selected_object = None
+        self.selected_objects = [] # Lista de índices seleccionados
+        self.selected_object = None # Mantener para compatibilidad
         self.dragging_object = False
         self.selecting_text = False
         self.resizing_object = False
+        self.selection_rect = None # QRectF en espacio pantalla
         self.is_animating = False
         
         # Buffers de Renderizado (El corazón del sistema)
@@ -69,6 +71,23 @@ class Canvas(QWidget):
     
     def world_to_screen(self, wx, wy):
         return wx * self.zoom + self.width()/2 + self.offset_x, wy * self.zoom + self.height()/2 + self.offset_y
+
+    def get_obj_dims(self, obj):
+        """Devuelve (w, h) en unidades del mundo para cualquier objeto."""
+        if "w" in obj and "h" in obj:
+            return obj["w"], obj["h"]
+        
+        t = obj["type"]
+        if t in ["cuadrado", "triangulo"]: return 100, 100
+        if t == "ventana": return 200, 150
+        if t == "markdown": return 300, 400
+        if t == "texto": return 200, 50
+        if t == "imagen":
+            w_orig = obj.get("w_orig", obj.get("w", 100))
+            h_orig = obj.get("h_orig", obj.get("h", 100))
+            scale = min(300 / w_orig, 300 / h_orig)
+            return w_orig * scale, h_orig * scale
+        return 100, 100
 
     def update_animation(self):
         speed = 0.15
@@ -130,16 +149,19 @@ class Canvas(QWidget):
         # Dibujamos los objetos de cristal y el texto (que ahora tiene fondo de cristal)
         for i, obj in enumerate(self.canvas_objects):
             t = obj["type"]
+            is_selected = (i in self.selected_objects)
+            sel_idx = i if is_selected else -1
+            
             if t == "cuadrado":
-                canvas_objects.draw_rounded_rect(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
+                canvas_objects.draw_rounded_rect(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
             elif t == "triangulo":
-                canvas_objects.draw_triangle(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
+                canvas_objects.draw_triangle(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
             elif t == "ventana":
-                canvas_objects.draw_window(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
+                canvas_objects.draw_window(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
             elif t == "texto":
-                canvas_objects.draw_text_object(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, config.TEXT_COLOR, full_solids_blur)
+                canvas_objects.draw_text_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, config.TEXT_COLOR, full_solids_blur)
             elif t == "markdown":
-                canvas_objects.draw_markdown_object(sp, obj, i, self.selected_object, self.zoom, self.world_to_screen, full_solids_blur)
+                canvas_objects.draw_markdown_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
         sp.end()
         
         # --- CAPA 4: DESENFOQUE FINAL PARA UI (Contiene TODO) ---
@@ -166,6 +188,12 @@ class Canvas(QWidget):
         if self.toolbar_animation_progress > 0.3:
             toolbar.draw_tool_buttons(painter, self, toolbar_rect, (self.toolbar_animation_progress - 0.3) / 0.7)
         
+        # 5.3 Dibujar Cuadro de Selección (Windows style)
+        if self.selection_rect:
+            painter.setPen(QPen(QColor(0, 120, 215, 255), 1))
+            painter.setBrush(QBrush(QColor(0, 120, 215, 60)))
+            painter.drawRect(self.selection_rect)
+        
         self.draw_ui_info(painter)
 
 
@@ -174,7 +202,7 @@ class Canvas(QWidget):
         painter.setPen(QPen(config.TEXT_COLOR))
         painter.drawText(10, 30, f"Zoom: {self.zoom:.2f}x")
         y = self.height() - 80
-        for line in ["Rueda: Zoom", "Click Izq: Pan", "ESC: Salir", "DEL: Eliminar"]:
+        for line in ["Rueda: Zoom", "Shift + Click: Pan", "ESC: Salir", "DEL: Eliminar"]:
             painter.drawText(10, y, line); y += 25
 
     # --- EVENTOS ---
@@ -225,16 +253,20 @@ class Canvas(QWidget):
                     self.update(); return
             if not self.current_circle_rect.contains(pos): self.circle_expanded = False; self._start_anim()
 
+        # Reset dragging flags before starting a new action
+        self.dragging = False
+        self.dragging_object = False
+        self.resizing_object = False
+        self.selecting_text = False
+
         # 1. Comprobar si el clic es en el tirador de redimensionado del objeto seleccionado
-        if self.selected_object is not None:
+        if self.selected_object is not None and self.selected_object < len(self.canvas_objects):
             obj = self.canvas_objects[self.selected_object]
             wx, wy = self.screen_to_world(pos.x(), pos.y())
-            # Tamaño en mundo
-            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else obj.get("w_orig", 100))))
-            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else obj.get("h_orig", 100))))
+            ow, oh = self.get_obj_dims(obj)
             
             hx, hy = obj["x"] + ow/2, obj["y"] + oh/2
-            if abs(wx - hx) < (15/self.zoom) and abs(wy - hy) < (15/self.zoom):
+            if abs(wx - hx) < (25/self.zoom) and abs(wy - hy) < (25/self.zoom):
                 self.resizing_object = True
                 self.drag_start_pos = pos
                 return
@@ -243,34 +275,38 @@ class Canvas(QWidget):
         wx, wy = self.screen_to_world(pos.x(), pos.y())
         for i in range(len(self.canvas_objects)-1, -1, -1):
             obj = self.canvas_objects[i]; ox, oy = obj["x"], obj["y"]
-            
-            # Caso especial: Selección de texto en Markdown
-            if obj["type"] == "markdown":
-                mw, mh = obj.get("w", 300), obj.get("h", 400)
-                if abs(wx-ox)<(mw/2) and abs(wy-oy)<(mh/2):
-                    # Si pinchamos en el área de título (arriba), permitimos arrastrar el objeto
-                    if wy < (oy - mh/2 + 30 + 15): 
-                        self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
-                        self.update(); return
-                    
-                    # Si pinchamos en el contenido, iniciamos selección de texto
-                    lx = wx - (ox - mw/2 + 15)
-                    ly = wy - (oy - mh/2 + 30 + 15) + obj.get("scroll_y", 0)
-                    hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
-                    obj["sel_start"] = hit_idx
-                    obj["sel_end"] = hit_idx
-                    self.selected_object = i
-                    self.selecting_text = True
-                    self.update(); return
-
-            # Colisión genérica basada en dimensiones reales
-            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else (obj.get("w_orig", 100) if obj["type"]=="imagen" else 100))))
-            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else (obj.get("h_orig", 100) if obj["type"]=="imagen" else 40))))
+            ow, oh = self.get_obj_dims(obj)
             
             if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
-                self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos; self.update(); return
+                # Si es Markdown, primero ver si es clic de texto o de título
+                if obj["type"] == "markdown":
+                    if wy < (oy - oh/2 + 30 + 15): # Área de título
+                        self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
+                    else: # Área de contenido -> Selección de texto
+                        lx = wx - (ox - ow/2 + 15)
+                        ly = wy - (oy - oh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                        hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
+                        obj["sel_start"] = hit_idx
+                        obj["sel_end"] = hit_idx
+                        self.selected_object = i
+                        self.selecting_text = True
+                else:
+                    self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
+                    if i not in self.selected_objects:
+                        self.selected_objects = [i]
+                
+                self.update(); return
         
-        self.selected_object, self.dragging, self.last_mouse_pos = None, True, pos
+        # Nueva Selección o Paneo
+        if event.modifiers() & Qt.ShiftModifier:
+            self.selected_objects = []
+            self.selected_object, self.dragging, self.last_mouse_pos = None, True, pos
+        else:
+            self.selected_objects = []
+            self.selected_object = None
+            self.selection_origin = pos # Guardamos el inicio del rectángulo
+            self.selection_rect = QRectF(pos, pos)
+        self.update()
 
     def mouseMoveEvent(self, event):
         pos = event.position()
@@ -289,28 +325,31 @@ class Canvas(QWidget):
         dist = ((pos.x() - (tr.x() + tr.width()/2))**2 + (pos.y() - (tr.y() + tr.height()/2))**2)**0.5
         
         # Cambio de cursor según hover
-        over_editable = False
-        over_resize = False
-        for obj in self.canvas_objects:
+        self.setCursor(Qt.ArrowCursor)
+        for i, obj in enumerate(reversed(self.canvas_objects)):
+            # Usar índice Real ya que enumerate(reversed) da índices invertidos
+            real_idx = len(self.canvas_objects) - 1 - i
             ox, oy = obj["x"], obj["y"]
-            ow = obj.get("w", 100 if obj["type"] in ["cuadrado", "triangulo"] else (200 if obj["type"]=="ventana" else (300 if obj["type"]=="markdown" else 100)))
-            oh = obj.get("h", 100 if obj["type"] in ["cuadrado", "triangulo"] else (150 if obj["type"]=="ventana" else (400 if obj["type"]=="markdown" else 40)))
+            ow, oh = self.get_obj_dims(obj)
             
-            # Hover sobre el tirador de redimensionado
-            hx, hy = ox + ow/2, oy + oh/2
-            if abs(wx - hx) < (15/self.zoom) and abs(wy - hy) < (15/self.zoom):
-                over_resize = True; break
+            # Tirador (Solo el actual seleccionado)
+            if self.selected_object == real_idx:
+                hx, hy = ox + ow/2, oy + oh/2
+                if abs(wx - hx) < (25/self.zoom) and abs(wy - hy) < (25/self.zoom):
+                    self.setCursor(Qt.SizeFDiagCursor); break
 
-            if (obj["type"] == "ventana" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)) or (obj["type"]=="texto" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)) or (obj["type"] == "markdown" and abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2)):
-                over_editable = True; break
-        
-        if over_resize:
-            self.setCursor(Qt.SizeFDiagCursor)
-        elif over_editable:
-            self.setCursor(Qt.IBeamCursor)
-        elif dist < (config.TOOLBAR_HOVER_DISTANCE_COLLAPSE if self.toolbar_expanded else config.TOOLBAR_HOVER_DISTANCE_EXPAND):
-            self.setCursor(Qt.ArrowCursor)
-        else:
+            # Cuerpo
+            if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
+                if obj["type"] in ["ventana", "texto", "markdown"]:
+                    if obj["type"] == "markdown" and wy < (oy - oh/2 + 30 + 15):
+                        self.setCursor(Qt.ArrowCursor)
+                    else:
+                        self.setCursor(Qt.IBeamCursor)
+                else:
+                    self.setCursor(Qt.ArrowCursor)
+                break
+
+        if dist < (config.TOOLBAR_HOVER_DISTANCE_COLLAPSE if self.toolbar_expanded else config.TOOLBAR_HOVER_DISTANCE_EXPAND):
             self.setCursor(Qt.ArrowCursor)
 
         new_e = dist < (config.TOOLBAR_HOVER_DISTANCE_COLLAPSE if self.toolbar_expanded else config.TOOLBAR_HOVER_DISTANCE_EXPAND)
@@ -319,6 +358,19 @@ class Canvas(QWidget):
         if self.dragging:
             self.offset_x += pos.x() - self.last_mouse_pos.x(); self.offset_y += pos.y() - self.last_mouse_pos.y()
             self.last_mouse_pos = pos; self.update()
+        elif self.selection_rect is not None:
+            # Actualizar el rectángulo de selección azul
+            self.selection_rect = QRectF(self.selection_origin, pos).normalized()
+            # Detectar objetos dentro del rectángulo
+            new_selection = []
+            for i, obj in enumerate(self.canvas_objects):
+                ox, oy = obj["x"], obj["y"]
+                screen_pos = QPointF(*self.world_to_screen(ox, oy))
+                if self.selection_rect.contains(screen_pos):
+                    new_selection.append(i)
+            self.selected_objects = new_selection
+            self.selected_object = new_selection[-1] if new_selection else None
+            self.update()
         elif self.resizing_object:
             pw_x, pw_y = self.screen_to_world(self.drag_start_pos.x(), self.drag_start_pos.y())
             cw_x, cw_y = self.screen_to_world(pos.x(), pos.y())
@@ -347,15 +399,18 @@ class Canvas(QWidget):
         elif self.dragging_object:
             pw_x, pw_y = self.screen_to_world(self.drag_start_pos.x(), self.drag_start_pos.y())
             cw_x, cw_y = self.screen_to_world(pos.x(), pos.y())
-            self.canvas_objects[self.selected_object]["x"] += cw_x - pw_x
-            self.canvas_objects[self.selected_object]["y"] += cw_y - pw_y
+            dx, dy = cw_x - pw_x, cw_y - pw_y
+            # Mover TODOS los objetos seleccionados
+            for idx in self.selected_objects:
+                self.canvas_objects[idx]["x"] += dx
+                self.canvas_objects[idx]["y"] += dy
             self.drag_start_pos = pos; self.update()
         elif getattr(self, "selecting_text", False) and self.selected_object is not None:
             obj = self.canvas_objects[self.selected_object]
             if obj["type"] == "markdown":
-                mw, mh = obj.get("w", 300), obj.get("h", 400)
-                lx = wx - (obj["x"] - mw/2 + 15)
-                ly = wy - (obj["y"] - mh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                ow, oh = self.get_obj_dims(obj)
+                lx = wx - (obj["x"] - ow/2 + 15)
+                ly = wy - (obj["y"] - oh/2 + 30 + 15) + obj.get("scroll_y", 0)
                 hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
                 obj["sel_end"] = hit_idx
                 self.update()
@@ -363,6 +418,8 @@ class Canvas(QWidget):
     def mouseReleaseEvent(self, event): 
         self.dragging = self.dragging_object = self.resizing_object = False
         self.selecting_text = False
+        self.selection_rect = None
+        self.update()
 
     # --- DRAG & DROP ---
     def dragEnterEvent(self, event):

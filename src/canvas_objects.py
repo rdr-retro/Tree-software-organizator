@@ -45,14 +45,17 @@ def draw_rounded_rect(painter, obj, index, selected_index, zoom, world_to_screen
     
     bg_color = obj.get("personal_color", QColor(60, 60, 80, 100))
     border_color = get_contrast_color(bg_color)
-    width = 3 if selected_index == index else 1.5
-    if selected_index != index: border_color.setAlphaF(0.6)
+    width = 3 if selected_index != -1 else 1.5
+    if selected_index != -1: 
+        border_color = QColor(0, 120, 215, 255)
+    else:
+        border_color.setAlphaF(0.6)
     
     painter.setBrush(Qt.NoBrush)
     painter.setPen(QPen(border_color, width))
     painter.drawRoundedRect(rect, 15, 15)
     
-    if selected_index == index:
+    if selected_index != -1:
         draw_resize_handle(painter, rect)
 
 def draw_triangle(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
@@ -89,11 +92,12 @@ def draw_triangle(painter, obj, index, selected_index, zoom, world_to_screen, bl
 
     bg_color = obj.get("personal_color", QColor(60, 60, 80, 100))
     border_color = get_contrast_color(bg_color)
-    width = 3 if selected_index == index else 1.5
+    width = 3 if selected_index != -1 else 1.5
+    if selected_index != -1: border_color = QColor(0, 120, 215, 255)
     painter.setBrush(Qt.NoBrush); painter.setPen(QPen(border_color, width))
     painter.drawPolygon(points)
     
-    if selected_index == index:
+    if selected_index != -1:
         rect = QRectF(screen_x - size_w/2, screen_y - size_h/2, size_w, size_h)
         draw_resize_handle(painter, rect)
 
@@ -131,7 +135,10 @@ def draw_window(painter, obj, index, selected_index, zoom, world_to_screen, blur
     painter.drawRect(QRectF(title_rect.x(), title_rect.y() + title_height/2, title_rect.width(), title_height/2))
     
     border_color = get_contrast_color(title_color)
-    painter.setBrush(Qt.NoBrush); painter.setPen(QPen(border_color, 1.5))
+    width_border = 1.5
+    if selected_index != -1:
+        border_color = QColor(0, 120, 215, 255); width_border = 3
+    painter.setBrush(Qt.NoBrush); painter.setPen(QPen(border_color, width_border))
     painter.drawRoundedRect(main_rect, 10, 10)
     
     painter.setPen(QPen(config.TEXT_COLOR))
@@ -150,7 +157,7 @@ def draw_window(painter, obj, index, selected_index, zoom, world_to_screen, blur
         display_text = content_text + cursor if is_selected else content_text
         painter.drawText(content_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, display_text)
 
-    if selected_index == index:
+    if selected_index != -1:
         draw_resize_handle(painter, main_rect)
 
 def draw_text_object(painter, obj, index, selected_index, zoom, world_to_screen, default_text_color, blurred_map=None):
@@ -218,11 +225,11 @@ def draw_image_object(painter, obj, index, selected_index, zoom, world_to_screen
     
     border_color = QColor(255, 255, 255, 150)
     width = 2
-    if selected_index == index:
-        border_color = QColor(100, 200, 255, 255); width = 4
+    if selected_index != -1:
+        border_color = QColor(0, 120, 215, 255); width = 4
     painter.setBrush(Qt.NoBrush); painter.setPen(QPen(border_color, width)); painter.drawRoundedRect(rect, 20, 20)
 
-    if selected_index == index: draw_resize_handle(painter, rect)
+    if selected_index != -1: draw_resize_handle(painter, rect)
 
 def draw_markdown_object(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
     world_x, world_y = obj["x"], obj["y"]
@@ -254,8 +261,8 @@ def draw_markdown_object(painter, obj, index, selected_index, zoom, world_to_scr
     bg_color = obj.get("personal_color", QColor(30, 30, 45, 180))
     painter.setBrush(QBrush(bg_color))
     border_color = QColor(255, 255, 255, 100); border_width = 1.5
-    if selected_index == index:
-        border_color = QColor(100, 200, 255, 255); border_width = 3
+    if selected_index != -1: # Cambiado de index a check de seleccion
+        border_color = QColor(0, 120, 215, 255); border_width = 3
     painter.setPen(QPen(border_color, border_width)); painter.drawRoundedRect(rect, 15, 15)
     
     title_bg = QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 230)
@@ -290,4 +297,4 @@ def draw_markdown_object(painter, obj, index, selected_index, zoom, world_to_scr
         selection = QAbstractTextDocumentLayout.Selection(); cursor = QTextCursor(obj["doc"]); cursor.setPosition(obj["sel_start"]); cursor.setPosition(obj["sel_end"], QTextCursor.KeepAnchor); selection.cursor = cursor; ctx.selections = [selection]
     painter.setPen(Qt.white); obj["doc"].documentLayout().draw(painter, ctx); painter.restore()
     
-    if selected_index == index: draw_resize_handle(painter, rect)
+    if selected_index != -1: draw_resize_handle(painter, rect)

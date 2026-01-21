@@ -64,7 +64,9 @@ def draw_tool_buttons(painter, canvas, toolbar_rect, opacity):
             border_color = QColor(255, 255, 255, int(40 * opacity))
         painter.setBrush(QBrush(bg_color))
         painter.setPen(QPen(border_color, 1))
-        painter.drawRoundedRect(button_rect, 8, 8)
+        # Forma de píldora: el radio es la mitad de la altura
+        pill_radius = config.BUTTON_HEIGHT / 2
+        painter.drawRoundedRect(button_rect, pill_radius, pill_radius)
         
         text_color = QColor(config.TEXT_COLOR)
         text_color.setAlphaF(opacity)
