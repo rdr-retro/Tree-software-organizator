@@ -1,20 +1,20 @@
-# Tree Software Organization 🌳
+# Tree Software Organization
 
-Una herramienta de organización visual premium diseñada con una estética **Liquid Glass** y alta interactividad. Este software permite crear pizarras dinámicas integrando formas geométricas, ventanas de texto editables e imágenes, todo bajo una atmósfera de diseño moderno y fluidas animaciones.
+Una herramienta de organización visual premium diseñada con una estética Liquid Glass y alta interactividad. Este software permite crear pizarras dinámicas integrando formas geométricas, ventanas de texto editables e imágenes, todo bajo una atmósfera de diseño moderno y fluidas animaciones.
 
-## ✨ Características Principales
+## Caracteristicas Principales
 
 - **Estética Liquid Glass**: Efectos avanzados de desenfoque gaussiano, refracción (magnificación) y aberración cromática (estilo iPhone) aplicados en tiempo real.
 - **Lienzo Infinito**: Navegación fluida con zoom dinámico y paneo suave.
 - **Herramientas de Dibujo**:
   - **Cuadrados y Triángulos**: Figuras geométricas con bordes suaves y efectos de vidrio.
   - **Ventanas de Cristal**: Áreas de organización con títulos y contenido de texto editable.
-  - **Texto Dinámico**: Escritura multilínea directa sobre el lienzo con "píldoras" de desenfoque dinámico para máxima legibilidad.
-- **Importación Inteligente**: Soporte para **Drag & Drop** de imágenes externas (`.png`, `.jpg`, etc.) con escalado automático y esquinas redondeadas.
+  - **Texto Dinámico**: Escritura multilínea directa sobre el lienzo con píldoras de desenfoque dinámico para máxima legibilidad.
+- **Importación Inteligente**: Soporte para Drag & Drop de imágenes externas (.png, .jpg, etc.) con escalado automático y esquinas redondeadas.
 - **Interfaz Fluida**: Toolbar dinámica y paleta de colores circular con animaciones orgánicas y feedback visual al pasar el ratón.
 - **Escritura Interactiva**: Cursor parpadeante, soporte para saltos de línea y placeholder guía ("Empieza a escribir...").
 
-## 🚀 Instalación y Ejecución
+## Instalacion y Ejecucion
 
 El proyecto está diseñado para ser fácil de arrancar en entornos macOS y Linux.
 
@@ -33,22 +33,22 @@ chmod +x run.sh
 ```
 
 El script se encargará automáticamente de:
-1. Crear un entorno virtual (`venv`).
-2. Instalar la dependencia principal (`PySide6`).
-3. Ejecutar la aplicación localizada en la carpeta `src/`.
+1. Crear un entorno virtual (venv).
+2. Instalar la dependencia principal (PySide6).
+3. Ejecutar la aplicación localizada en la carpeta src/.
 
-## 🖱️ Controles Rápidos
+## Controles Rapidos
 
 - **Rueda del ratón**: Zoom in / Zoom out.
 - **Click izquierdo (arrastrar)**: Moverse por el lienzo (Pan).
 - **Click en objeto**: Seleccionar y arrastrar objetos individuales.
 - **Teclado (objeto seleccionado)**: 
   - Escribir directamente.
-  - `Enter`: Salto de línea.
-  - `Backspace / Delete`: Borrar texto o eliminar el objeto si está vacío.
+  - Enter: Salto de línea.
+  - Backspace / Delete: Borrar texto o eliminar el objeto si está vacío.
 - **Drag & Drop**: Arrastra cualquier imagen desde tu explorador de archivos al lienzo.
 
-## 📁 Estructura del Proyecto
+## Estructura del Proyecto
 
 ```text
 Tree Software Organization/
@@ -64,4 +64,4 @@ Tree Software Organization/
 ```
 
 ---
-*Desarrollado con ❤️ para una experiencia de organización visual única.*
+*Desarrollado para una experiencia de organización visual única.*
