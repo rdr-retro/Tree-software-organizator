@@ -4,7 +4,7 @@ import time
 from utils import get_contrast_color
 import config
 
-def draw_resize_handle(painter, rect):
+def draw_resize_handle(painter, rect, draw_delete=True):
     painter.save()
     painter.setBrush(QColor(255, 255, 255, 200))
     painter.setPen(QPen(Qt.black, 1))
@@ -12,18 +12,21 @@ def draw_resize_handle(painter, rect):
     handle_rect = QRectF(rect.right() - handle_size/2, rect.bottom() - handle_size/2, handle_size, handle_size)
     painter.drawEllipse(handle_rect)
     
-    # Dibujar botón de eliminar estilo Mac (Rojo con X)
-    delete_size = 16
-    delete_rect = QRectF(rect.left() - delete_size/2, rect.top() - delete_size/2, delete_size, delete_size)
-    painter.setBrush(QColor(255, 60, 60))
-    painter.setPen(Qt.NoPen)
-    painter.drawEllipse(delete_rect)
-    
-    # La X
-    painter.setPen(QPen(Qt.white, 2))
-    p1 = delete_rect.center() + QPointF(-3, -3); p2 = delete_rect.center() + QPointF(3, 3)
-    p3 = delete_rect.center() + QPointF(3, -3); p4 = delete_rect.center() + QPointF(-3, 3)
-    painter.drawLine(p1, p2); painter.drawLine(p3, p4)
+    if draw_delete:
+        # Dibujar botón de eliminar estilo Mac (Rojo con X)
+        delete_size = 16
+        delete_rect = QRectF(rect.left() - delete_size/2, rect.top() - delete_size/2, delete_size, delete_size)
+        painter.setBrush(QColor(255, 60, 60))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(delete_rect)
+        
+        # La X
+        painter.setPen(QPen(Qt.white, 2))
+        p1 = delete_rect.center() + QPointF(-3, -3); p2 = delete_rect.center() + QPointF(3, 3)
+        p3 = delete_rect.center() + QPointF(3, -3); p4 = delete_rect.center() + QPointF(-3, 3)
+        painter.drawLine(p1, p2); painter.drawLine(p3, p4)
+
+    painter.restore()
     painter.restore()
 
 def draw_rounded_rect(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
@@ -310,6 +313,115 @@ def draw_markdown_object(painter, obj, index, selected_index, zoom, world_to_scr
         selection = QAbstractTextDocumentLayout.Selection(); cursor = QTextCursor(obj["doc"]); cursor.setPosition(obj["sel_start"]); cursor.setPosition(obj["sel_end"], QTextCursor.KeepAnchor); selection.cursor = cursor; ctx.selections = [selection]
     painter.setPen(Qt.white); obj["doc"].documentLayout().draw(painter, ctx); painter.restore()
     
+    if selected_index != -1: draw_resize_handle(painter, rect)
+
+def draw_code_object(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
+    """Renderiza un editor de contenido de código estilo IDE"""
+    world_x, world_y = obj["x"], obj["y"]
+    screen_x, screen_y = world_to_screen(world_x, world_y)
+    
+    width_world = obj.get("w", 500)
+    height_world = obj.get("h", 400)
+    width, height = width_world * zoom, height_world * zoom
+    title_height = 30 * zoom
+    
+    rect = QRectF(screen_x - width/2, screen_y - height/2, width, height)
+    title_rect = QRectF(screen_x - width/2, screen_y - height/2, width, title_height)
+    
+    # 1. Fondo Glassmorphism Oscuro
+    s_rect = rect.toRect()
+    if blurred_map and not blurred_map.isNull():
+        painter.save()
+        path = QPainterPath(); path.addRoundedRect(rect, 10, 10); painter.setClipPath(path)
+        
+        refr_zoom = config.GLASS_REFRACTION
+        src_w, src_h = s_rect.width() / refr_zoom, s_rect.height() / refr_zoom
+        src_x, src_y = s_rect.x() + (s_rect.width() - src_w) / 2, s_rect.y() + (s_rect.height() - src_h) / 2
+        src_rect = QRect(int(src_x), int(src_y), int(src_w), int(src_h))
+        
+        painter.setOpacity(0.4)
+        ab = config.GLASS_ABERRATION
+        painter.drawPixmap(s_rect.translated(-ab, 0), blurred_map, src_rect)
+        painter.drawPixmap(s_rect.translated(ab, 0), blurred_map, src_rect)
+        painter.setOpacity(1.0); painter.drawPixmap(s_rect, blurred_map, src_rect)
+        painter.restore()
+
+    # Fondo estilo editor oscuro translúcido para el efecto glass
+    bg_color = QColor(30, 30, 30, 120) 
+    painter.setBrush(QBrush(bg_color))
+    
+    border_color = QColor(60, 60, 80, 150)
+    border_width = 1
+    if selected_index != -1: # Si está seleccionado
+        border_color = QColor(0, 120, 215, 255); border_width = 3
+    
+    painter.setPen(QPen(border_color, border_width))
+    painter.drawRoundedRect(rect, 10, 10)
+    
+    # Barra de Título
+    title_bg = QColor(45, 45, 50, 255)
+    painter.setBrush(QBrush(title_bg)); painter.setPen(Qt.NoPen)
+    path_title = QPainterPath()
+    path_title.addRoundedRect(title_rect, 10, 10)
+    painter.drawPath(path_title)
+    # Rellenar la curva inferior para que conecte con el cuerpo
+    painter.drawRect(QRectF(title_rect.x(), title_rect.y() + title_height/2, title_rect.width(), title_height/2))
+    
+    # Título (solo texto)
+    painter.setPen(QPen(QColor(200, 200, 200)))
+    title_font = painter.font(); title_font.setFamily("Consolas"); title_font.setPointSize(int(10 * zoom)); painter.setFont(title_font)
+    
+    painter.drawText(title_rect.adjusted(15*zoom, 0, -10, 0), Qt.AlignLeft | Qt.AlignVCenter, obj.get("title", "code"))
+    
+    # Contenido
+    padding = 10 * zoom
+    content_rect = rect.adjusted(padding, title_height + padding, -padding, -padding)
+    world_visible_width = content_rect.width() / zoom
+    world_visible_height = content_rect.height() / zoom
+    
+    if "doc" not in obj:
+        obj["doc"] = QTextDocument()
+        obj["doc"].setDefaultStyleSheet("""
+            * { color: #d4d4d4; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+            .keyword { color: #569cd6; font-weight: bold; }
+            .string { color: #ce9178; }
+            .comment { color: #6a9955; font-style: italic; }
+            .function { color: #dcdcaa; }
+        """)
+        
+        raw_code = obj.get("content", "")
+        # Escapado básico
+        safe_code = raw_code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        obj["doc"].setHtml(f"<pre>{safe_code}</pre>")
+
+    if obj["doc"].textWidth() != world_visible_width: obj["doc"].setTextWidth(world_visible_width)
+    obj["max_scroll_y"] = max(0, obj["doc"].size().height() - world_visible_height)
+    
+    scroll_y = obj.get("scroll_y", 0)
+    
+    painter.save()
+    painter.translate(content_rect.topLeft())
+    clip_path = QPainterPath(); clip_path.addRect(QRectF(0, 0, content_rect.width(), content_rect.height())); painter.setClipPath(clip_path)
+    painter.scale(zoom, zoom); painter.translate(0, -scroll_y)
+    
+    ctx = QAbstractTextDocumentLayout.PaintContext()
+    # Selección estilo IDE
+    sel_pal = QPalette()
+    sel_pal.setColor(QPalette.Highlight, QColor(38, 79, 120, 150))
+    sel_pal.setColor(QPalette.HighlightedText, Qt.white)
+    ctx.palette = sel_pal
+    
+    if obj.get("sel_start") is not None and obj.get("sel_end") is not None:
+        selection = QAbstractTextDocumentLayout.Selection()
+        cursor = QTextCursor(obj["doc"])
+        cursor.setPosition(obj["sel_start"])
+        cursor.setPosition(obj["sel_end"], QTextCursor.KeepAnchor)
+        selection.cursor = cursor
+        ctx.selections = [selection]
+        
+    painter.setPen(Qt.white); obj["doc"].documentLayout().draw(painter, ctx)
+    painter.restore()
+
     if selected_index != -1: draw_resize_handle(painter, rect)
 
 def draw_drawing_object(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):

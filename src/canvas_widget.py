@@ -100,6 +100,7 @@ class Canvas(QWidget):
         if t in ["cuadrado", "triangulo"]: return 100, 100
         if t == "ventana": return 200, 150
         if t == "markdown": return 300, 400
+        if t == "codigo": return 500, 400
         if t == "texto": return 200, 50
         if t == "imagen":
             w_orig = obj.get("w_orig", obj.get("w", 100))
@@ -184,6 +185,7 @@ class Canvas(QWidget):
                 elif t == "ventana": canvas_objects.draw_window(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
                 elif t == "texto": canvas_objects.draw_text_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, config.TEXT_COLOR, self.blurred_pixmap)
                 elif t == "markdown": canvas_objects.draw_markdown_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+                elif t == "codigo": canvas_objects.draw_code_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
                 elif t == "dibujo": canvas_objects.draw_drawing_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
 
             if self.is_drawing and self.current_stroke:
@@ -258,9 +260,9 @@ class Canvas(QWidget):
         pos = event.position()
         wx, wy = self.screen_to_world(pos.x(), pos.y())
         
-        # 1. Comprobar si estamos sobre un objeto markdown para hacer scroll
+        # 1. Comprobar si estamos sobre un objeto markdown/codigo para hacer scroll
         for obj in reversed(self.canvas_objects):
-            if obj["type"] == "markdown":
+            if obj["type"] in ["markdown", "codigo"]:
                 ox, oy = obj["x"], obj["y"]
                 # Detección precisa del área de contenido del markdown (300x400)
                 if abs(wx - ox) < 150 and abs(wy - oy) < 200:
@@ -406,12 +408,14 @@ class Canvas(QWidget):
             # Botón Eliminar (Delete) - Lógica inversa de coordenadas
             dx, dy = obj["x"] - ow/2, obj["y"] - oh/2
             if abs(wx - dx) < (25/self.zoom) and abs(wy - dy) < (25/self.zoom):
-                del self.canvas_objects[self.selected_object]
-                self.selected_object = None
-                self.selected_objects = []
-                self.needs_blur_update = True
-                self.update()
-                return
+                # IMPORTANTE: Los dibujos NO se borran con botón, solo con borrador
+                if obj["type"] != "dibujo":
+                    del self.canvas_objects[self.selected_object]
+                    self.selected_object = None
+                    self.selected_objects = []
+                    self.needs_blur_update = True
+                    self.update()
+                    return
 
         # Canvas Objects
         wx, wy = self.screen_to_world(pos.x(), pos.y())
@@ -420,17 +424,22 @@ class Canvas(QWidget):
             ow, oh = self.get_obj_dims(obj)
             
             if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
-                # Si es Markdown, primero ver si es clic de texto o de título
-                if obj["type"] == "markdown":
+                # Si es Markdown o Code, primero ver si es clic de texto o de título
+                if obj["type"] in ["markdown", "codigo"]:
                     if wy < (oy - oh/2 + 30 + 15): # Área de título
                         self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
                     else: # Área de contenido -> Selección de texto
                         lx = wx - (ox - ow/2 + 15)
                         ly = wy - (oy - oh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                        padding = 15 if obj["type"] == "markdown" else 10 # Pequeño ajuste de padding
+                        lx = wx - (ox - ow/2 + padding)
+                        ly = wy - (oy - oh/2 + 30 + padding) + obj.get("scroll_y", 0)
+                        
                         hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
                         obj["sel_start"] = hit_idx
                         obj["sel_end"] = hit_idx
                         self.selected_object = i
+                        if i not in self.selected_objects: self.selected_objects = [i] # IMPORTANTE: Actualizar visualmente la selección
                         self.selecting_text = True
                 else:
                     self.selected_object, self.dragging_object, self.drag_start_pos = i, True, pos
@@ -486,8 +495,8 @@ class Canvas(QWidget):
 
             # Cuerpo
             if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
-                if obj["type"] in ["ventana", "texto", "markdown", "dibujo"]:
-                    if obj["type"] == "markdown" and wy < (oy - oh/2 + 30 + 15):
+                if obj["type"] in ["ventana", "texto", "markdown", "dibujo", "codigo"]:
+                    if obj["type"] in ["markdown", "codigo"] and wy < (oy - oh/2 + 30 + 15):
                         self.setCursor(Qt.ArrowCursor)
                     else:
                         self.setCursor(Qt.IBeamCursor)
@@ -562,10 +571,11 @@ class Canvas(QWidget):
             self.drag_start_pos = pos; self.update()
         elif getattr(self, "selecting_text", False) and self.selected_object is not None:
             obj = self.canvas_objects[self.selected_object]
-            if obj["type"] == "markdown":
+            if obj["type"] in ["markdown", "codigo"]:
                 ow, oh = self.get_obj_dims(obj)
-                lx = wx - (obj["x"] - ow/2 + 15)
-                ly = wy - (obj["y"] - oh/2 + 30 + 15) + obj.get("scroll_y", 0)
+                padding = 15 if obj["type"] == "markdown" else 10
+                lx = wx - (obj["x"] - ow/2 + padding)
+                ly = wy - (obj["y"] - oh/2 + 30 + padding) + obj.get("scroll_y", 0)
                 hit_idx = obj["doc"].documentLayout().hitTest(QPointF(lx, ly), Qt.FuzzyHit)
                 obj["sel_end"] = hit_idx
                 self.update()
@@ -748,6 +758,25 @@ class Canvas(QWidget):
                     count += 1
                 except Exception as e:
                     print(f"Error reading md file: {e}")
+            elif ext.endswith(('.py', '.c', '.cpp', '.h', '.hpp', '.js', '.ts', '.html', '.css', '.json', '.xml', '.java', '.txt', '.sh')):
+                wx, wy = self.screen_to_world(pos.x() + count*20, pos.y() + count*20)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    new_obj = {
+                        "type": "codigo",
+                        "x": wx,
+                        "y": wy,
+                        "path": path,
+                        "content": content,
+                        "title": path.split('/')[-1],
+                        "ext": "." + path.split('.')[-1] if '.' in path else ""
+                    }
+                    self.canvas_objects.append(new_obj)
+                    count += 1
+                except Exception as e:
+                    print(f"Error reading code file: {e}")
         
         if count > 0: self.update()
 
