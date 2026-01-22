@@ -10,6 +10,8 @@ import config
 import utils
 import canvas_objects
 import toolbar
+from project_manager import ProjectManager
+from PySide6.QtWidgets import QFileDialog
 
 class Canvas(QWidget):
     def __init__(self):
@@ -43,6 +45,7 @@ class Canvas(QWidget):
         self.selecting_text = False
         self.resizing_object = False
         self.selection_rect = None # QRectF en espacio pantalla
+        self.selected_tool = 0
         self.selected_vertical_tool = None
         self.drawing_stroke_width = 2
         self.drawing_stroke_width = 2
@@ -232,6 +235,14 @@ class Canvas(QWidget):
             self.current_vertical_rect = vertical_rect
             
             toolbar.draw_vertical_menu(final_painter, self, vertical_rect, self.vertical_menu_animation_progress, self.final_blur_pixmap)
+            
+            # System Menu (Save/Open) - A la derecha del menú vertical
+            # Siempre visible, pequeño
+            sys_w, sys_h = 100, 40
+            system_rect = QRectF(vertical_rect.right() + 10, config.TOOLBAR_MARGIN, sys_w, sys_h)
+            self.current_system_rect = system_rect
+            toolbar.draw_system_menu(final_painter, self, system_rect, self.final_blur_pixmap)
+
             toolbar.draw_color_palette(final_painter, self, circle_rect, self.circle_animation_progress, self.final_blur_pixmap)
             toolbar.draw_toolbar_island(final_painter, self, toolbar_rect, self.final_blur_pixmap)
             
@@ -315,10 +326,19 @@ class Canvas(QWidget):
                         self.update(); return 
             if not self.current_vertical_rect.contains(pos): self.vertical_menu_expanded = False; self._start_anim()
 
+        # System Menu (Save/Open)
+        if hasattr(self, "system_btn_rects"):
+            if self.system_btn_rects["save"].contains(pos):
+                self.save_project_action()
+                return
+            elif self.system_btn_rects["open"].contains(pos):
+                self.load_project_action()
+                return
+
         # Si hay herramienta de dibujo seleccionada
         if self.selected_vertical_tool is not None:
             # Primero ver si estamos pinchando en la UI
-            if tr.contains(pos) or self.current_circle_rect.contains(pos) or self.current_vertical_rect.contains(pos):
+            if tr.contains(pos) or self.current_circle_rect.contains(pos) or self.current_vertical_rect.contains(pos) or getattr(self, "current_system_rect", QRectF()).contains(pos):
                 pass
             else:
                 tool_name = config.VERTICAL_TOOLS[self.selected_vertical_tool]["name"].lower()
@@ -476,6 +496,12 @@ class Canvas(QWidget):
             for i, rect in enumerate(self.vertical_buttons_rects):
                 if rect.contains(pos): self.vertical_hovered_button = i; break
         
+        # Hover System Buttons
+        self.hovered_system_btn = None
+        if hasattr(self, "system_btn_rects"):
+            if self.system_btn_rects["save"].contains(pos): self.hovered_system_btn = "save"
+            elif self.system_btn_rects["open"].contains(pos): self.hovered_system_btn = "open"
+
         wx, wy = self.screen_to_world(pos.x(), pos.y())
         dist = ((pos.x() - (tr.x() + tr.width()/2))**2 + (pos.y() - (tr.y() + tr.height()/2))**2)**0.5
         
@@ -725,7 +751,12 @@ class Canvas(QWidget):
         for url in urls:
             path = url.toLocalFile()
             ext = path.lower()
-            if ext.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
+            if ext.endswith('.tree'):
+                 ProjectManager.load_project(self, path)
+                 self.needs_blur_update = True
+                 self.update()
+                 return # Carga completa, ignoramos otros archivos
+            elif ext.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')):
                 wx, wy = self.screen_to_world(pos.x() + count*20, pos.y() + count*20)
                 pixmap = QPixmap(path)
                 if not pixmap.isNull():
@@ -782,6 +813,20 @@ class Canvas(QWidget):
 
     def _start_anim(self): 
         if not self.is_animating: self.animation_timer.start(); self.is_animating = True
+
+    def save_project_action(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Guardar Proyecto", "", "Tree Project (*.tree)")
+        if filename:
+            if not filename.endswith(".tree"):
+                filename += ".tree"
+            ProjectManager.save_project(self, filename)
+
+    def load_project_action(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Abrir Proyecto", "", "Tree Project (*.tree)")
+        if filename:
+            ProjectManager.load_project(self, filename)
+            self.needs_blur_update = True
+            self.update()
 
     def create_obj(self):
         wx, wy = self.screen_to_world(self.width()/2, self.height()/2)

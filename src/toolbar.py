@@ -211,3 +211,63 @@ def draw_vertical_menu(painter, canvas, menu_rect, opacity, blurred_map=None):
     painter.setPen(QPen(QColor(255, 255, 255, 200)))
     font = painter.font(); font.setPointSize(16 if icon == "⋮" else 14); painter.setFont(font)
     painter.drawText(trigger_rect, Qt.AlignCenter, icon)
+
+def draw_system_menu(painter, canvas, rect, blurred_map=None):
+    """Menú de sistema flotante (Guardar / Abrir)"""
+    s_rect = rect.toRect()
+    
+    # 1. Glassmorphism
+    if blurred_map and not blurred_map.isNull():
+        painter.save()
+        path = QPainterPath(); path.addRoundedRect(rect, config.TOOLBAR_RADIUS, config.TOOLBAR_RADIUS); painter.setClipPath(path)
+        
+        refr_zoom = config.GLASS_REFRACTION
+        src_w, src_h = s_rect.width() / refr_zoom, s_rect.height() / refr_zoom
+        src_x, src_y = s_rect.x() + (s_rect.width() - src_w) / 2, s_rect.y() + (s_rect.height() - src_h) / 2
+        src_rect = QRect(int(src_x), int(src_y), int(src_w), int(src_h))
+        
+        painter.setOpacity(0.4)
+        ab = config.GLASS_ABERRATION
+        painter.drawPixmap(s_rect.translated(-ab, 0), blurred_map, src_rect)
+        painter.drawPixmap(s_rect.translated(ab, 0), blurred_map, src_rect)
+        painter.setOpacity(1.0); painter.drawPixmap(s_rect, blurred_map, src_rect)
+        painter.restore()
+
+    # Tinte
+    tinte = QColor(25, 25, 45, 120)
+    painter.setBrush(QBrush(tinte))
+    painter.setPen(QPen(config.TOOLBAR_BORDER_COLOR, 1))
+    painter.drawRoundedRect(rect, config.TOOLBAR_RADIUS, config.TOOLBAR_RADIUS)
+    
+    # Botones: Guardar (Floppy) y Abrir (Folder)
+    # Iconos unicode aproximados: 💾 (Save), 📂 (Open)
+    # Usaremos texto simple si no hay fuente de iconos, o emojis si Qt los soporta bien (macOS suele hacerlo)
+    
+    btn_width = rect.width() / 2
+    save_rect = QRectF(rect.x(), rect.y(), btn_width, rect.height())
+    open_rect = QRectF(rect.x() + btn_width, rect.y(), btn_width, rect.height())
+    
+    # Hover effects
+    mouse_pos = canvas.mapFromGlobal(canvas.cursor().pos())
+    
+    # Guardar
+    if getattr(canvas, "hovered_system_btn", "") == "save":
+        painter.setBrush(QBrush(QColor(255, 255, 255, 40)))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(save_rect.adjusted(2,2,-2,-2), 5, 5)
+    
+    painter.setPen(QPen(QColor(255, 255, 255, 220)))
+    font = painter.font(); font.setPointSize(14); painter.setFont(font)
+    painter.drawText(save_rect, Qt.AlignCenter, "💾")
+    
+    # Abrir
+    if getattr(canvas, "hovered_system_btn", "") == "open":
+        painter.setBrush(QBrush(QColor(255, 255, 255, 40)))
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(open_rect.adjusted(2,2,-2,-2), 5, 5)
+        
+    painter.setPen(QPen(QColor(255, 255, 255, 220)))
+    painter.drawText(open_rect, Qt.AlignCenter, "📂")
+    
+    # Guardar rects en canvas para hit testing
+    canvas.system_btn_rects = {"save": save_rect, "open": open_rect}

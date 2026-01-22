@@ -1,6 +1,7 @@
+import os
+import time
 from PySide6.QtCore import Qt, QRectF, QPointF, QRect, QSize
 from PySide6.QtGui import QBrush, QPen, QColor, QPolygonF, QPainterPath, QLinearGradient, QPixmap, QPainter, QTextDocument, QAbstractTextDocumentLayout, QTextCursor, QPalette, QImage
-import time
 from utils import get_contrast_color
 import config
 
@@ -237,7 +238,24 @@ def draw_image_object(painter, obj, index, selected_index, zoom, world_to_screen
     
     painter.save()
     path = QPainterPath(); path.addRoundedRect(rect, 20, 20); painter.setClipPath(path)
-    painter.drawPixmap(rect.toRect(), obj["pixmap"]); painter.restore()
+    
+    px = obj.get("pixmap")
+    if px and not px.isNull() and not obj.get("missing_asset", False):
+        painter.drawPixmap(rect.toRect(), px)
+    else:
+        # Placeholder para Asset faltante
+        painter.setBrush(QBrush(QColor(40, 40, 50)))
+        painter.setPen(QPen(QColor(255, 60, 60, 150), 2, Qt.DashLine))
+        painter.drawRect(rect)
+        painter.setPen(QPen(QColor(255, 60, 60)))
+        font = painter.font(); font.setPointSize(int(10 * zoom)); painter.setFont(font)
+        painter.drawText(rect, Qt.AlignCenter, "Missing Asset\n" + os.path.basename(obj.get("path", "Unknown")))
+        # Dibujar una X roja
+        painter.setPen(QPen(QColor(255, 60, 60, 80), 3))
+        painter.drawLine(rect.topLeft(), rect.bottomRight())
+        painter.drawLine(rect.topRight(), rect.bottomLeft())
+        
+    painter.restore()
     
     border_color = QColor(255, 255, 255, 150)
     width = 2
