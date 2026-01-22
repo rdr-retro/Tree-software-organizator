@@ -161,8 +161,8 @@ def draw_vertical_menu(painter, canvas, menu_rect, opacity, blurred_map=None):
     # Dibujar botones internos si está expandido
     if opacity > 0.3:
         inner_opacity = (opacity - 0.3) / 0.7
-        button_size = 30
-        spacing = 15
+        button_size = 38
+        spacing = 12
         start_x = menu_rect.x() + (menu_rect.width() - button_size) / 2
         start_y = menu_rect.y() + 55 
         
@@ -171,6 +171,9 @@ def draw_vertical_menu(painter, canvas, menu_rect, opacity, blurred_map=None):
         for i, tool in enumerate(config.VERTICAL_TOOLS):
             btn_y = start_y + i * (button_size + spacing)
             btn_rect = QRectF(start_x, btn_y, button_size, button_size)
+            
+            # Hit Rect más grande para facilitar selección (ancho completo y espacio vertical)
+            hit_rect = QRectF(menu_rect.x(), btn_y - spacing/2, menu_rect.width(), button_size + spacing)
             
             # El botón se ve seleccionado si coincide con el índice
             is_selected = (getattr(canvas, "selected_vertical_tool", -1) == i)
@@ -191,10 +194,10 @@ def draw_vertical_menu(painter, canvas, menu_rect, opacity, blurred_map=None):
             painter.drawEllipse(btn_rect)
             
             painter.setPen(QPen(QColor(255, 255, 255, int(255 * inner_opacity))))
-            font = painter.font(); font.setPointSize(12); painter.setFont(font)
+            font = painter.font(); font.setPointSize(14); painter.setFont(font)
             painter.drawText(btn_rect, Qt.AlignCenter, tool["icon"])
             
-            canvas.vertical_buttons_rects.append(btn_rect)
+            canvas.vertical_buttons_rects.append(hit_rect)
 
     # Botón principal (Trigger)
     trigger_rect = QRectF(menu_rect.x(), menu_rect.y(), menu_rect.width(), config.TOOLBAR_HEIGHT_COLLAPSED)

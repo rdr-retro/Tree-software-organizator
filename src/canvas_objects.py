@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, QRectF, QPointF, QRect, QSize
-from PySide6.QtGui import QBrush, QPen, QColor, QPolygonF, QPainterPath, QLinearGradient, QPixmap, QPainter, QTextDocument, QAbstractTextDocumentLayout, QTextCursor, QPalette
+from PySide6.QtGui import QBrush, QPen, QColor, QPolygonF, QPainterPath, QLinearGradient, QPixmap, QPainter, QTextDocument, QAbstractTextDocumentLayout, QTextCursor, QPalette, QImage
 import time
 from utils import get_contrast_color
 import config
@@ -8,9 +8,22 @@ def draw_resize_handle(painter, rect):
     painter.save()
     painter.setBrush(QColor(255, 255, 255, 200))
     painter.setPen(QPen(Qt.black, 1))
-    handle_size = 8
+    handle_size = 12 # Aumentado para mejor agarre
     handle_rect = QRectF(rect.right() - handle_size/2, rect.bottom() - handle_size/2, handle_size, handle_size)
     painter.drawEllipse(handle_rect)
+    
+    # Dibujar botón de eliminar estilo Mac (Rojo con X)
+    delete_size = 16
+    delete_rect = QRectF(rect.left() - delete_size/2, rect.top() - delete_size/2, delete_size, delete_size)
+    painter.setBrush(QColor(255, 60, 60))
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(delete_rect)
+    
+    # La X
+    painter.setPen(QPen(Qt.white, 2))
+    p1 = delete_rect.center() + QPointF(-3, -3); p2 = delete_rect.center() + QPointF(3, 3)
+    p3 = delete_rect.center() + QPointF(3, -3); p4 = delete_rect.center() + QPointF(-3, 3)
+    painter.drawLine(p1, p2); painter.drawLine(p3, p4)
     painter.restore()
 
 def draw_rounded_rect(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
@@ -332,41 +345,46 @@ def draw_drawing_object(painter, obj, index, selected_index, zoom, world_to_scre
         border_color = QColor(0, 120, 215, 255); border_width = 3
     painter.setPen(QPen(border_color, border_width)); painter.drawRoundedRect(rect, 15, 15)
 
-    # Dibujar los trazos
+    # Dibujar los trazos sobre una capa temporal
     strokes = obj.get("strokes", [])
-    painter.save()
-    painter.setRenderHint(QPainter.Antialiasing)
-    
-    # Clip para que no se salga del cuadrado
-    path_clip = QPainterPath(); path_clip.addRoundedRect(rect, 15, 15); painter.setClipPath(path_clip)
-    
-    for stroke in strokes:
-        points = stroke.get("points", [])
-        if len(points) < 2: continue
-        
-        style = stroke.get("style", "lapiz")
-        width = stroke.get("width", 2) * zoom
-        color = QColor(stroke.get("color", Qt.white))
-        
-        if style == "rotulador":
-            color.setAlpha(150) # Translucido
-            width *= 2
-        elif style == "borrador":
-            # El borrador aquí actúa como pintar del color de fondo o transparente si pudiéramos
-            # pero como es un objeto, pintamos con un color que simule borrar sobre el vidrio
-            color = QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255)
-            width *= 2
-
-        painter.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        
-        poly = QPolygonF()
-        for i, (wx, wy) in enumerate(points):
-            # wx, wy son relativos al CENTRO del objeto para que se muevan con él
-            px, py = screen_x + wx * zoom, screen_y + wy * zoom
-            poly.append(QPointF(px, py))
-        
-        painter.drawPolyline(poly)
-    
-    painter.restore()
+    if strokes:
+        layer_size = rect.size().toSize()
+        if layer_size.width() > 0 and layer_size.height() > 0:
+            layer = QImage(layer_size, QImage.Format_ARGB32_Premultiplied)
+            layer.fill(Qt.transparent)
+            
+            lp = QPainter(layer)
+            lp.setRenderHint(QPainter.Antialiasing)
+            
+            # Ajustar sistema de coordenadas al centro de la capa (px)
+            lp.translate(layer_size.width()/2, layer_size.height()/2)
+            
+            for stroke in strokes:
+                points = stroke.get("points", [])
+                if len(points) < 2: continue
+                
+                style = stroke.get("style", "lapicero")
+                width = stroke.get("width", 2) * zoom
+                color = QColor(stroke.get("color", Qt.white))
+                
+                lp.save()
+                if style == "rotulador":
+                    color.setAlpha(150); width *= 2
+                elif style == "borrador":
+                    # Simular borrado pintando del color del vidrio con modo fuente
+                    # para que 'pise' lo que hay debajo en este mismo objeto
+                    color = QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255)
+                    width *= 3
+                
+                lp.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                poly = QPolygonF()
+                for wx, wy in points:
+                    # MULTIPLICAR por zoom para pasar de unidades mundo a píxeles de capa
+                    poly.append(QPointF(wx * zoom, wy * zoom))
+                lp.drawPolyline(poly)
+                lp.restore()
+            
+            lp.end()
+            painter.drawImage(rect.topLeft(), layer)
     
     if selected_index != -1: draw_resize_handle(painter, rect)

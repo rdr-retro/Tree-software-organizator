@@ -27,7 +27,7 @@ CIRCLE_EXPANDED_HEIGHT = 720
 
 # Configuración del Menú Vertical (NUEVO)
 VERTICAL_MENU_EXPANDED_WIDTH = 50
-VERTICAL_MENU_EXPANDED_HEIGHT = 240
+VERTICAL_MENU_EXPANDED_HEIGHT = 220
 
 # Herramientas
 TOOL_BUTTONS = [
@@ -38,10 +38,9 @@ TOOL_BUTTONS = [
 ]
 
 VERTICAL_TOOLS = [
-    {"name": "Lapiz", "icon": "✎"},
+    {"name": "Lapicero", "icon": "✎"},
     {"name": "Rotulador", "icon": "✒"},
-    {"name": "Borrador", "icon": "⌫"},
-    {"name": "Grosor", "icon": "≡"}
+    {"name": "Borrador", "icon": "⌫"}
 ]
 
 BUTTON_HEIGHT = 50

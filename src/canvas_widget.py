@@ -1,6 +1,9 @@
 import sys
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QPointF, QTimer, QRectF, QSize
+# Alias para evitar conflicto con la función min/max de python si fuera necesario, o simple uso directo
+def max_(a, b): return a if a > b else b
+
 from PySide6.QtGui import QPainter, QPen, QColor, QWheelEvent, QMouseEvent, QBrush, QPixmap, QPolygonF
 
 import config
@@ -26,7 +29,8 @@ class Canvas(QWidget):
         self.circle_animation_progress = 0.0
         self.vertical_menu_expanded = False
         self.vertical_menu_animation_progress = 0.0
-        self.active_color = QColor(40, 40, 50, 230)
+        # Color por defecto Azul ("es azul")
+        self.active_color = QColor(0, 120, 215)
         self.current_circle_radius = config.TOOLBAR_HEIGHT_COLLAPSED / 2
         self.vertical_hovered_button = None
         self.vertical_buttons_rects = []
@@ -41,8 +45,11 @@ class Canvas(QWidget):
         self.selection_rect = None # QRectF en espacio pantalla
         self.selected_vertical_tool = None
         self.drawing_stroke_width = 2
+        self.drawing_stroke_width = 2
         self.current_stroke = None
         self.is_drawing = False
+        self.drawing_target_index = None
+        self.is_erasing = False
         self.is_animating = False
         
         # Buffers de Renderizado (Cacheados para rendimiento fluido)
@@ -156,9 +163,9 @@ class Canvas(QWidget):
             wp.end()
         
         # CAPA 2: DESENFOQUE ESTRUCTURAL
-        if self.needs_blur_update or (not self.is_drawing and not self.is_animating):
-            self.blurred_pixmap = utils.apply_gaussian_blur(self.world_pixmap, config.GLASS_BLUR_RADIUS)
-            self.needs_blur_update = False
+        # Desactivamos la optimización condicional para garantizar estabilidad visual
+        self.blurred_pixmap = utils.apply_gaussian_blur(self.world_pixmap, config.GLASS_BLUR_RADIUS)
+        self.needs_blur_update = False
         
         # CAPA 3: ESCENARIO COMPLETO
         self.full_scene_pixmap.fill(Qt.transparent)
@@ -184,9 +191,10 @@ class Canvas(QWidget):
                 points = self.current_stroke["points"]
                 style = self.current_stroke["style"]
                 width = self.current_stroke["width"] * self.zoom
-                color = QColor(255, 255, 255)
+                # Usar el color guardado en el trazo o el activo por defecto
+                color = QColor(self.current_stroke.get("color", self.active_color))
+                
                 if style == "rotulador": color.setAlpha(150); width *= 2
-                elif style == "borrador": color.setAlpha(50); width *= 2
                 
                 sp.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
                 poly = QPolygonF()
@@ -301,28 +309,80 @@ class Canvas(QWidget):
             if hasattr(self, "vertical_buttons_rects"):
                 for i, rect in enumerate(self.vertical_buttons_rects):
                     if rect.contains(pos): 
-                        if i == 3: # Grosor
-                            self.drawing_stroke_width = {2:5, 5:10, 10:20, 20:2}[self.drawing_stroke_width]
-                        else:
-                            self.selected_vertical_tool = i if self.selected_vertical_tool != i else None
+                        self.selected_vertical_tool = i if self.selected_vertical_tool != i else None
                         self.update(); return 
             if not self.current_vertical_rect.contains(pos): self.vertical_menu_expanded = False; self._start_anim()
 
-        # Si hay herramienta de dibujo seleccionada, el clic inicia un trazo
+        # Si hay herramienta de dibujo seleccionada
         if self.selected_vertical_tool is not None:
-            # Primero ver si estamos pinchando en la UI (Toolbar)
+            # Primero ver si estamos pinchando en la UI
             if tr.contains(pos) or self.current_circle_rect.contains(pos) or self.current_vertical_rect.contains(pos):
-                pass # Dejar que procese clicks de UI si fuera necesario (aunque ya retornamos arriba)
+                pass
             else:
-                self.is_drawing = True
-                wx, wy = self.screen_to_world(pos.x(), pos.y())
                 tool_name = config.VERTICAL_TOOLS[self.selected_vertical_tool]["name"].lower()
-                self.current_stroke = {
-                    "style": tool_name,
-                    "width": self.drawing_stroke_width,
-                    "points": [(wx, wy)]
-                }
-                return
+                
+                if tool_name == "borrador":
+                    # MODO BORRADOR VECTORIAL
+                    self.is_erasing = True
+                    self.perform_eraser_at(pos) # Borrar al hacer clic
+                    return
+                else:
+                    # MODO DIBUJO (Lapicero / Rotulador)
+                    
+                    # 0. Primero comprobamos si el usuario quiere interactuar con un objeto ya seleccionado (Tiradores)
+                    # Esto tiene prioridad sobre dibujar nuevo trazo
+                    if self.selected_object is not None and self.selected_object < len(self.canvas_objects):
+                        obj = self.canvas_objects[self.selected_object]
+                        wx, wy = self.screen_to_world(pos.x(), pos.y())
+                        ow, oh = self.get_obj_dims(obj)
+                        
+                        # Resize Handle
+                        hx, hy = obj["x"] + ow/2, obj["y"] + oh/2
+                        if abs(wx - hx) < (25/self.zoom) and abs(wy - hy) < (25/self.zoom):
+                            self.resizing_object = True
+                            self.drag_start_pos = pos
+                            return
+                            
+                        # Delete Handle
+                        dx, dy = obj["x"] - ow/2, obj["y"] - oh/2
+                        if abs(wx - dx) < (25/self.zoom) and abs(wy - dy) < (25/self.zoom):
+                             del self.canvas_objects[self.selected_object]
+                             self.selected_object = None
+                             self.selected_objects = []
+                             self.needs_blur_update = True
+                             self.update()
+                             return
+
+                    # 1. Comprobamos si quiere seleccionar/mover un objeto existente (incluidos dibujos)
+                    wx, wy = self.screen_to_world(pos.x(), pos.y())
+                    clicked_obj_idx = None
+                    for i in range(len(self.canvas_objects)-1, -1, -1):
+                        obj = self.canvas_objects[i]; ox, oy = obj["x"], obj["y"]
+                        ow, oh = self.get_obj_dims(obj)
+                        if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
+                            clicked_obj_idx = i
+                            break
+                    
+                    # Si clickamos un objeto dibujo, queremos dibujar DENTRO de él (fusión)
+                    if clicked_obj_idx is not None and self.canvas_objects[clicked_obj_idx]["type"] == "dibujo":
+                         self.drawing_target_index = clicked_obj_idx
+                         # Continuamos abajo para iniciar el trazo...
+                    
+                    # Si clickamos OTRO tipo de objeto (texto, markdown, etc), queremos seleccionarlo no pintar encima
+                    elif clicked_obj_idx is not None:
+                        # Salimos de este bloque para que se ejecute la lógica de selección de abajo
+                        pass 
+                    else:
+                        # Si es fondo limpio, iniciamos trazo normal
+                        self.is_drawing = True
+                        wx, wy = self.screen_to_world(pos.x(), pos.y())
+                        self.current_stroke = {
+                            "style": tool_name,
+                            "width": self.drawing_stroke_width,
+                            "color": QColor(self.active_color), 
+                            "points": [(wx, wy)]
+                        }
+                        return
 
         # Reset dragging flags before starting a new action
         self.dragging = False
@@ -336,10 +396,21 @@ class Canvas(QWidget):
             wx, wy = self.screen_to_world(pos.x(), pos.y())
             ow, oh = self.get_obj_dims(obj)
             
+            # Tirador (Resize)
             hx, hy = obj["x"] + ow/2, obj["y"] + oh/2
             if abs(wx - hx) < (25/self.zoom) and abs(wy - hy) < (25/self.zoom):
                 self.resizing_object = True
                 self.drag_start_pos = pos
+                return
+            
+            # Botón Eliminar (Delete) - Lógica inversa de coordenadas
+            dx, dy = obj["x"] - ow/2, obj["y"] - oh/2
+            if abs(wx - dx) < (25/self.zoom) and abs(wy - dy) < (25/self.zoom):
+                del self.canvas_objects[self.selected_object]
+                self.selected_object = None
+                self.selected_objects = []
+                self.needs_blur_update = True
+                self.update()
                 return
 
         # Canvas Objects
@@ -435,6 +506,10 @@ class Canvas(QWidget):
             self.current_stroke["points"].append((wx, wy))
             self.update(); return
 
+        if self.is_erasing:
+            self.perform_eraser_at(pos)
+            return
+
         if self.dragging:
             self.offset_x += pos.x() - self.last_mouse_pos.x(); self.offset_y += pos.y() - self.last_mouse_pos.y()
             self.last_mouse_pos = pos; self.update()
@@ -500,31 +575,132 @@ class Canvas(QWidget):
             self.is_drawing = False
             points = self.current_stroke["points"]
             if len(points) > 2:
-                # Calcular caja y centro para que sea un objeto desplazable
-                wxs = [p[0] for p in points]
-                wys = [p[1] for p in points]
-                min_x, max_x = min(wxs), max(wxs)
-                min_y, max_y = min(wys), max(wys)
-                cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+                # CASO A: Añadir a objeto existente y redimensionar
+                if self.drawing_target_index is not None and self.drawing_target_index < len(self.canvas_objects):
+                    target_obj = self.canvas_objects[self.drawing_target_index]
+                    
+                    # 1. Recuperar todos los trazos en coordenadas MUNDIALES
+                    all_strokes_world = []
+                    
+                    # Trazos existentes
+                    tox, toy = target_obj["x"], target_obj["y"]
+                    for s in target_obj.get("strokes", []):
+                        world_pts = [(p[0] + tox, p[1] + toy) for p in s["points"]]
+                        all_strokes_world.append({"style": s["style"], "width": s["width"], "color": s.get("color"), "points": world_pts})
+                    
+                    # Nuevo trazo (ya está en mundial)
+                    new_s_copy = self.current_stroke.copy() # Copia para no alterar el original referencia
+                    all_strokes_world.append(new_s_copy)
+                    
+                    # 2. Calcular nueva caja englobante de TODO
+                    all_x, all_y = [], []
+                    for s in all_strokes_world:
+                        for p in s["points"]:
+                            all_x.append(p[0]); all_y.append(p[1])
+                    
+                    min_x, max_x = min(all_x), max(all_x)
+                    min_y, max_y = min(all_y), max(all_y)
+                    
+                    new_cx, new_cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+                    new_w = max_(100, max_x - min_x + 40) # Padding
+                    new_h = max_(100, max_y - min_y + 40)
+                    
+                    # 3. Re-convertir todo a coordenadas LOCALES del nuevo centro
+                    final_strokes = []
+                    for s in all_strokes_world:
+                        local_pts = [(p[0] - new_cx, p[1] - new_cy) for p in s["points"]]
+                        s["points"] = local_pts
+                        final_strokes.append(s)
+                    
+                    # 4. Actualizar objeto
+                    target_obj["x"], target_obj["y"] = new_cx, new_cy
+                    target_obj["w"], target_obj["h"] = new_w, new_h
+                    target_obj["strokes"] = final_strokes
+                    
+                # CASO B: Crear nuevo objeto independiente
+                else: 
+                    # Calcular caja y centro
+                    wxs = [p[0] for p in points]
+                    wys = [p[1] for p in points]
+                    min_x, max_x = min(wxs), max(wxs)
+                    min_y, max_y = min(wys), max(wys)
+                    cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+                    
+                    # Convertir puntos a locales (relativos al centro)
+                    local_points = [(p[0] - cx, p[1] - cy) for p in points]
+                    self.current_stroke["points"] = local_points
+                    
+                    new_obj = {
+                        "type": "dibujo",
+                        "x": cx, "y": cy,
+                        "w": max(100, max_x - min_x + 40), "h": max(100, max_y - min_y + 40),
+                        "strokes": [self.current_stroke]
+                    }
+                    self.canvas_objects.append(new_obj)
                 
-                # Convertir puntos a locales (relativos al centro)
-                local_points = [(p[0] - cx, p[1] - cy) for p in points]
-                self.current_stroke["points"] = local_points
-                
-                new_obj = {
-                    "type": "dibujo",
-                    "x": cx, "y": cy,
-                    "w": max_x - min_x + 40, "h": max_y - min_y + 40,
-                    "strokes": [self.current_stroke]
-                }
-                self.canvas_objects.append(new_obj)
+                self.needs_blur_update = True
+            
             self.current_stroke = None
+            self.drawing_target_index = None # Reset
             self.update()
 
+        self.is_erasing = False
         self.dragging = self.dragging_object = self.resizing_object = False
         self.selecting_text = False
         self.selection_rect = None
         self.update()
+
+    def perform_eraser_at(self, pos):
+        """Elimina trazos individuales dentro de objetos de dibujo"""
+        wx, wy = self.screen_to_world(pos.x(), pos.y())
+        eraser_radius = 20 / self.zoom 
+        
+        indices_to_delete = []
+        something_changed = False
+        
+        for i, obj in enumerate(self.canvas_objects):
+            if obj["type"] != "dibujo": continue
+            
+            # 1. Caja rápida (si no estamos ni cerca, saltar)
+            ox, oy = obj["x"], obj["y"]
+            ow, oh = self.get_obj_dims(obj)
+            if not (ox - ow/2 - eraser_radius < wx < ox + ow/2 + eraser_radius and 
+                    oy - oh/2 - eraser_radius < wy < oy + oh/2 + eraser_radius):
+                continue
+            
+            # 2. Filtrar trazos que NO colisionan con el borrador
+            new_strokes = []
+            strokes_changed_here = False
+            
+            for stroke in obj.get("strokes", []):
+                stroke_hit = False
+                for px, py in stroke.get("points", []):
+                    # px, py son locales
+                    gpx = ox + px
+                    gpy = oy + py
+                    if (gpx - wx)**2 + (gpy - wy)**2 < eraser_radius**2:
+                        stroke_hit = True
+                        break
+                
+                if not stroke_hit:
+                    new_strokes.append(stroke)
+                else:
+                    strokes_changed_here = True
+            
+            if strokes_changed_here:
+                obj["strokes"] = new_strokes
+                something_changed = True
+                if not new_strokes:
+                    indices_to_delete.append(i)
+        
+        if indices_to_delete:
+            for i in sorted(indices_to_delete, reverse=True):
+                del self.canvas_objects[i]
+            something_changed = True
+            
+        if something_changed:
+            self.needs_blur_update = True
+            self.update()
 
     # --- DRAG & DROP ---
     def dragEnterEvent(self, event):
