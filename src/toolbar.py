@@ -128,3 +128,83 @@ def _draw_palette_buttons(painter, canvas, circle_rect, opacity):
         painter.setBrush(QBrush(color.lighter(120) if canvas.circle_hovered_button == i else color))
         painter.drawEllipse(btn_rect)
         button["current_rect"] = btn_rect
+def draw_vertical_menu(painter, canvas, menu_rect, opacity, blurred_map=None):
+    """Menú vertical con 4 botones"""
+    s_rect = menu_rect.toRect()
+    if blurred_map and not blurred_map.isNull():
+        painter.save()
+        path = QPainterPath()
+        # Radio dinámico según animación
+        radius = config.TOOLBAR_RADIUS
+        path.addRoundedRect(menu_rect, radius, radius)
+        painter.setClipPath(path)
+        
+        zoom = config.GLASS_REFRACTION
+        src_w, src_h = s_rect.width() / zoom, s_rect.height() / zoom
+        src_x = s_rect.x() + (s_rect.width() - src_w) / 2
+        src_y = s_rect.y() + (s_rect.height() - src_h) / 2
+        src_rect = QRect(int(src_x), int(src_y), int(src_w), int(src_h))
+        
+        ab = config.GLASS_ABERRATION
+        painter.setOpacity(0.4)
+        painter.drawPixmap(s_rect.translated(-ab, 1), blurred_map, src_rect)
+        painter.drawPixmap(s_rect.translated(ab, -1), blurred_map, src_rect)
+        painter.setOpacity(1.0)
+        painter.drawPixmap(s_rect, blurred_map, src_rect)
+        painter.restore()
+
+    tinte = QColor(25, 25, 45, 120)
+    painter.setBrush(QBrush(tinte))
+    painter.setPen(QPen(config.TOOLBAR_BORDER_COLOR, 1))
+    painter.drawRoundedRect(menu_rect, config.TOOLBAR_RADIUS, config.TOOLBAR_RADIUS)
+
+    # Dibujar botones internos si está expandido
+    if opacity > 0.3:
+        inner_opacity = (opacity - 0.3) / 0.7
+        button_size = 30
+        spacing = 15
+        start_x = menu_rect.x() + (menu_rect.width() - button_size) / 2
+        start_y = menu_rect.y() + 55 
+        
+        canvas.vertical_buttons_rects = []
+        
+        for i, tool in enumerate(config.VERTICAL_TOOLS):
+            btn_y = start_y + i * (button_size + spacing)
+            btn_rect = QRectF(start_x, btn_y, button_size, button_size)
+            
+            # El botón se ve seleccionado si coincide con el índice
+            is_selected = (getattr(canvas, "selected_vertical_tool", -1) == i)
+            hover = (canvas.vertical_hovered_button == i)
+            
+            if is_selected:
+                bg = QColor(0, 120, 215, int(220 * inner_opacity))
+                border_color = QColor(255, 255, 255, int(200 * inner_opacity))
+            elif hover:
+                bg = QColor(80, 80, 110, int(200 * inner_opacity))
+                border_color = QColor(255, 255, 255, int(120 * inner_opacity))
+            else:
+                bg = QColor(40, 40, 60, int(140 * inner_opacity))
+                border_color = QColor(255, 255, 255, int(80 * inner_opacity))
+            
+            painter.setBrush(QBrush(bg))
+            painter.setPen(QPen(border_color, 1))
+            painter.drawEllipse(btn_rect)
+            
+            painter.setPen(QPen(QColor(255, 255, 255, int(255 * inner_opacity))))
+            font = painter.font(); font.setPointSize(12); painter.setFont(font)
+            painter.drawText(btn_rect, Qt.AlignCenter, tool["icon"])
+            
+            canvas.vertical_buttons_rects.append(btn_rect)
+
+    # Botón principal (Trigger)
+    trigger_rect = QRectF(menu_rect.x(), menu_rect.y(), menu_rect.width(), config.TOOLBAR_HEIGHT_COLLAPSED)
+    
+    # Cambiar icono si hay algo seleccionado
+    sel_tool_idx = getattr(canvas, "selected_vertical_tool", None)
+    icon = "⋮"
+    if sel_tool_idx is not None:
+        icon = config.VERTICAL_TOOLS[sel_tool_idx]["icon"]
+        
+    painter.setPen(QPen(QColor(255, 255, 255, 200)))
+    font = painter.font(); font.setPointSize(16 if icon == "⋮" else 14); painter.setFont(font)
+    painter.drawText(trigger_rect, Qt.AlignCenter, icon)

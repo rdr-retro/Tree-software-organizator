@@ -1,7 +1,7 @@
 import sys
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPointF, QTimer, QRectF
-from PySide6.QtGui import QPainter, QPen, QColor, QWheelEvent, QMouseEvent, QBrush, QPixmap
+from PySide6.QtCore import Qt, QPointF, QTimer, QRectF, QSize
+from PySide6.QtGui import QPainter, QPen, QColor, QWheelEvent, QMouseEvent, QBrush, QPixmap, QPolygonF
 
 import config
 import utils
@@ -24,8 +24,12 @@ class Canvas(QWidget):
         self.toolbar_animation_progress = 0.0
         self.circle_expanded = False
         self.circle_animation_progress = 0.0
+        self.vertical_menu_expanded = False
+        self.vertical_menu_animation_progress = 0.0
         self.active_color = QColor(40, 40, 50, 230)
         self.current_circle_radius = config.TOOLBAR_HEIGHT_COLLAPSED / 2
+        self.vertical_hovered_button = None
+        self.vertical_buttons_rects = []
         
         # Objects
         self.canvas_objects = []
@@ -35,11 +39,19 @@ class Canvas(QWidget):
         self.selecting_text = False
         self.resizing_object = False
         self.selection_rect = None # QRectF en espacio pantalla
+        self.selected_vertical_tool = None
+        self.drawing_stroke_width = 2
+        self.current_stroke = None
+        self.is_drawing = False
         self.is_animating = False
         
-        # Buffers de Renderizado (El corazón del sistema)
-        self.world_pixmap = None      # Captura de cuadrícula y objetos sólidos
-        self.blurred_pixmap = None    # Versión Gaussiana del mundo
+        # Buffers de Renderizado (Cacheados para rendimiento fluido)
+        self.world_pixmap = QPixmap()
+        self.blurred_pixmap = QPixmap()
+        self.full_scene_pixmap = QPixmap()
+        self.final_blur_pixmap = QPixmap()
+        self.last_blur_size = QSize(0,0)
+        self.needs_blur_update = True
         
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.update_animation)
@@ -87,21 +99,29 @@ class Canvas(QWidget):
             h_orig = obj.get("h_orig", obj.get("h", 100))
             scale = min(300 / w_orig, 300 / h_orig)
             return w_orig * scale, h_orig * scale
+        if t == "dibujo":
+            return obj.get("w", 200), obj.get("h", 200)
         return 100, 100
 
     def update_animation(self):
         speed = 0.15
         t_target = 1.0 if self.toolbar_expanded else 0.0
         c_target = 1.0 if self.circle_expanded else 0.0
+        v_target = 1.0 if self.vertical_menu_expanded else 0.0
         
         self.toolbar_animation_progress += (t_target - self.toolbar_animation_progress) * speed
         self.circle_animation_progress += (c_target - self.circle_animation_progress) * speed
+        self.vertical_menu_animation_progress += (v_target - self.vertical_menu_animation_progress) * speed
         
         init_r = config.TOOLBAR_HEIGHT_COLLAPSED / 2
         self.current_circle_radius = init_r - (init_r - 25) * self.circle_animation_progress
         
-        if abs(self.toolbar_animation_progress - t_target) < 0.01 and abs(self.circle_animation_progress - c_target) < 0.01:
-            self.toolbar_animation_progress, self.circle_animation_progress = t_target, c_target
+        if abs(self.toolbar_animation_progress - t_target) < 0.01 and \
+           abs(self.circle_animation_progress - c_target) < 0.01 and \
+           abs(self.vertical_menu_animation_progress - v_target) < 0.01:
+            self.toolbar_animation_progress = t_target
+            self.circle_animation_progress = c_target
+            self.vertical_menu_animation_progress = v_target
             self.animation_timer.stop()
             self.is_animating = False
         self.update()
@@ -109,92 +129,112 @@ class Canvas(QWidget):
     def paintEvent(self, event):
         if self.width() <= 0 or self.height() <= 0: return
         
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        # 1. Preparar Buffers al tamaño de la ventana
+        size = self.size()
+        if self.world_pixmap.size() != size:
+            self.world_pixmap = QPixmap(size)
+            self.full_scene_pixmap = QPixmap(size)
+            self.needs_blur_update = True
         
-        # --- CAPA 1: FONDO Y CUADRÍCULA + OBJETOS SÓLIDOS (Imágenes) ---
-        world_pix = QPixmap(self.size())
-        world_pix.fill(config.BG_COLOR)
-        wp = QPainter(world_pix)
-        wp.setRenderHint(QPainter.Antialiasing)
-        
-        # 1.1 Dibujar Cuadrícula
-        spacing = 100 * self.zoom
-        wp.setPen(QPen(config.GRID_COLOR, 2))
-        ox = (self.offset_x + self.width()/2) % spacing
-        oy = (self.offset_y + self.height()/2) % spacing
-        x = ox
-        while x < self.width(): wp.drawLine(int(x), 0, int(x), self.height()); x += spacing
-        y = oy
-        while y < self.height(): wp.drawLine(0, int(y), self.width(), int(y)); y += spacing
-        
-        # 1.2 Dibujar Imágenes (Son sólidos, para que el cristal los desenfoque)
-        for i, obj in enumerate(self.canvas_objects):
-            if obj["type"] == "imagen":
-                canvas_objects.draw_image_object(wp, obj, i, self.selected_object, self.zoom, self.world_to_screen)
-        wp.end()
-        
-        # --- CAPA 2: DESENFOQUE DE TODO LO SÓLIDO (Fondo + Imágenes) ---
-        full_solids_blur = utils.apply_gaussian_blur(world_pix, config.GLASS_BLUR_RADIUS)
-        
-        # --- CAPA 3: DIBUJAR ESCENARIO COMPLETO (Sólidos + Cristales) ---
-        full_scene_pix = QPixmap(self.size())
-        full_scene_pix.fill(Qt.transparent)
-        sp = QPainter(full_scene_pix)
-        sp.setRenderHint(QPainter.Antialiasing)
-        
-        # Dibujamos el fondo ya con imágenes nítidas
-        sp.drawPixmap(0, 0, world_pix)
-        
-        # Dibujamos los objetos de cristal y el texto (que ahora tiene fondo de cristal)
-        for i, obj in enumerate(self.canvas_objects):
-            t = obj["type"]
-            is_selected = (i in self.selected_objects)
-            sel_idx = i if is_selected else -1
+        # CAPA 1: FONDO Y CUADRÍCULA
+        self.world_pixmap.fill(config.BG_COLOR)
+        wp = QPainter()
+        if wp.begin(self.world_pixmap):
+            wp.setRenderHint(QPainter.Antialiasing)
+            spacing = 100 * self.zoom
+            wp.setPen(QPen(config.GRID_COLOR, 2))
+            ox = (self.offset_x + self.width()/2) % spacing
+            oy = (self.offset_y + self.height()/2) % spacing
+            x = ox
+            while x < self.width(): wp.drawLine(int(x), 0, int(x), self.height()); x += spacing
+            y = oy
+            while y < self.height(): wp.drawLine(0, int(y), self.width(), int(y)); y += spacing
             
-            if t == "cuadrado":
-                canvas_objects.draw_rounded_rect(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
-            elif t == "triangulo":
-                canvas_objects.draw_triangle(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
-            elif t == "ventana":
-                canvas_objects.draw_window(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
-            elif t == "texto":
-                canvas_objects.draw_text_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, config.TEXT_COLOR, full_solids_blur)
-            elif t == "markdown":
-                canvas_objects.draw_markdown_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, full_solids_blur)
-        sp.end()
+            for i, obj in enumerate(self.canvas_objects):
+                if obj["type"] == "imagen":
+                    canvas_objects.draw_image_object(wp, obj, i, self.selected_object, self.zoom, self.world_to_screen)
+            wp.end()
         
-        # --- CAPA 4: DESENFOQUE FINAL PARA UI (Contiene TODO) ---
-        final_blur_map = utils.apply_gaussian_blur(full_scene_pix, config.GLASS_BLUR_RADIUS)
+        # CAPA 2: DESENFOQUE ESTRUCTURAL
+        if self.needs_blur_update or (not self.is_drawing and not self.is_animating):
+            self.blurred_pixmap = utils.apply_gaussian_blur(self.world_pixmap, config.GLASS_BLUR_RADIUS)
+            self.needs_blur_update = False
         
-        # --- CAPA 5: DIBUJO A PANTALLA ---
-        # 5.1 Dibujar la escena completa tal cual
-        painter.drawPixmap(0, 0, full_scene_pix)
+        # CAPA 3: ESCENARIO COMPLETO
+        self.full_scene_pixmap.fill(Qt.transparent)
+        sp = QPainter()
+        if sp.begin(self.full_scene_pixmap):
+            sp.setRenderHint(QPainter.Antialiasing)
+            sp.drawPixmap(0, 0, self.world_pixmap)
+            
+            for i, obj in enumerate(self.canvas_objects):
+                t = obj["type"]
+                is_selected = (i in self.selected_objects)
+                sel_idx = i if is_selected else -1
+                
+                if t == "cuadrado": canvas_objects.draw_rounded_rect(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+                elif t == "triangulo": canvas_objects.draw_triangle(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+                elif t == "ventana": canvas_objects.draw_window(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+                elif t == "texto": canvas_objects.draw_text_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, config.TEXT_COLOR, self.blurred_pixmap)
+                elif t == "markdown": canvas_objects.draw_markdown_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+                elif t == "dibujo": canvas_objects.draw_drawing_object(sp, obj, i, sel_idx, self.zoom, self.world_to_screen, self.blurred_pixmap)
+
+            if self.is_drawing and self.current_stroke:
+                sp.save()
+                points = self.current_stroke["points"]
+                style = self.current_stroke["style"]
+                width = self.current_stroke["width"] * self.zoom
+                color = QColor(255, 255, 255)
+                if style == "rotulador": color.setAlpha(150); width *= 2
+                elif style == "borrador": color.setAlpha(50); width *= 2
+                
+                sp.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                poly = QPolygonF()
+                for wx, wy in points:
+                    sx, sy = self.world_to_screen(wx, wy)
+                    poly.append(QPointF(sx, sy))
+                sp.drawPolyline(poly)
+                sp.restore()
+            sp.end()
         
-        # 5.2 Dibujar Interfaz (Usa final_blur_map para desenfocar TODO)
-        tw = config.TOOLBAR_WIDTH_COLLAPSED + (config.TOOLBAR_WIDTH_EXPANDED - config.TOOLBAR_WIDTH_COLLAPSED) * self.toolbar_animation_progress
-        th = config.TOOLBAR_HEIGHT_COLLAPSED + (config.TOOLBAR_HEIGHT_EXPANDED - config.TOOLBAR_HEIGHT_COLLAPSED) * self.toolbar_animation_progress
-        toolbar_rect = QRectF((self.width() - tw)/2, config.TOOLBAR_MARGIN, tw, th)
+        # CAPA 4: DESENFOQUE FINAL PARA UI
+        if not self.is_drawing and not self.is_animating:
+            self.final_blur_pixmap = utils.apply_gaussian_blur(self.full_scene_pixmap, config.GLASS_BLUR_RADIUS)
         
-        cw = config.TOOLBAR_HEIGHT_COLLAPSED + (config.CIRCLE_EXPANDED_WIDTH - config.TOOLBAR_HEIGHT_COLLAPSED) * self.circle_animation_progress
-        ch = config.TOOLBAR_HEIGHT_COLLAPSED + (config.CIRCLE_EXPANDED_HEIGHT - config.TOOLBAR_HEIGHT_COLLAPSED) * self.circle_animation_progress
-        circle_rect = QRectF(toolbar_rect.right() + 10, config.TOOLBAR_MARGIN, cw, ch)
-        self.current_circle_rect = circle_rect
-        
-        # La interfaz ahora desenfoca tanto la cuadrícula como los objetos debajo
-        toolbar.draw_color_palette(painter, self, circle_rect, self.circle_animation_progress, final_blur_map)
-        toolbar.draw_toolbar_island(painter, self, toolbar_rect, final_blur_map)
-        
-        if self.toolbar_animation_progress > 0.3:
-            toolbar.draw_tool_buttons(painter, self, toolbar_rect, (self.toolbar_animation_progress - 0.3) / 0.7)
-        
-        # 5.3 Dibujar Cuadro de Selección (Windows style)
-        if self.selection_rect:
-            painter.setPen(QPen(QColor(0, 120, 215, 255), 1))
-            painter.setBrush(QBrush(QColor(0, 120, 215, 60)))
-            painter.drawRect(self.selection_rect)
-        
-        self.draw_ui_info(painter)
+        # CAPA 5: PRESENTACIÓN A PANTALLA
+        final_painter = QPainter()
+        if final_painter.begin(self):
+            final_painter.setRenderHint(QPainter.Antialiasing)
+            final_painter.drawPixmap(0, 0, self.full_scene_pixmap)
+            
+            tw = config.TOOLBAR_WIDTH_COLLAPSED + (config.TOOLBAR_WIDTH_EXPANDED - config.TOOLBAR_WIDTH_COLLAPSED) * self.toolbar_animation_progress
+            th = config.TOOLBAR_HEIGHT_COLLAPSED + (config.TOOLBAR_HEIGHT_EXPANDED - config.TOOLBAR_HEIGHT_COLLAPSED) * self.toolbar_animation_progress
+            toolbar_rect = QRectF((self.width() - tw)/2, config.TOOLBAR_MARGIN, tw, th)
+            
+            cw = config.TOOLBAR_HEIGHT_COLLAPSED + (config.CIRCLE_EXPANDED_WIDTH - config.TOOLBAR_HEIGHT_COLLAPSED) * self.circle_animation_progress
+            ch = config.TOOLBAR_HEIGHT_COLLAPSED + (config.CIRCLE_EXPANDED_HEIGHT - config.TOOLBAR_HEIGHT_COLLAPSED) * self.circle_animation_progress
+            circle_rect = QRectF(toolbar_rect.right() + 10, config.TOOLBAR_MARGIN, cw, ch)
+            self.current_circle_rect = circle_rect
+            
+            vw = config.TOOLBAR_HEIGHT_COLLAPSED + (config.VERTICAL_MENU_EXPANDED_WIDTH - config.TOOLBAR_HEIGHT_COLLAPSED) * self.vertical_menu_animation_progress
+            vh = config.TOOLBAR_HEIGHT_COLLAPSED + (config.VERTICAL_MENU_EXPANDED_HEIGHT - config.TOOLBAR_HEIGHT_COLLAPSED) * self.vertical_menu_animation_progress
+            vertical_rect = QRectF(circle_rect.right() + 10, config.TOOLBAR_MARGIN, vw, vh)
+            self.current_vertical_rect = vertical_rect
+            
+            toolbar.draw_vertical_menu(final_painter, self, vertical_rect, self.vertical_menu_animation_progress, self.final_blur_pixmap)
+            toolbar.draw_color_palette(final_painter, self, circle_rect, self.circle_animation_progress, self.final_blur_pixmap)
+            toolbar.draw_toolbar_island(final_painter, self, toolbar_rect, self.final_blur_pixmap)
+            
+            if self.toolbar_animation_progress > 0.3:
+                toolbar.draw_tool_buttons(final_painter, self, toolbar_rect, (self.toolbar_animation_progress - 0.3) / 0.7)
+            
+            if self.selection_rect:
+                final_painter.setPen(QPen(QColor(0, 120, 215, 255), 1))
+                final_painter.setBrush(QBrush(QColor(0, 120, 215, 60)))
+                final_painter.drawRect(self.selection_rect)
+            
+            self.draw_ui_info(final_painter)
+            final_painter.end()
 
 
 
@@ -252,6 +292,37 @@ class Canvas(QWidget):
                     if self.selected_object is not None: self.canvas_objects[self.selected_object]["personal_color"] = btn["color"]
                     self.update(); return
             if not self.current_circle_rect.contains(pos): self.circle_expanded = False; self._start_anim()
+
+        # Vertical Menu
+        base_vertical = QRectF(self.current_circle_rect.right() + 10, config.TOOLBAR_MARGIN, config.TOOLBAR_HEIGHT_COLLAPSED, config.TOOLBAR_HEIGHT_COLLAPSED)
+        if base_vertical.contains(pos): self.vertical_menu_expanded = not self.vertical_menu_expanded; self._start_anim(); return
+        
+        if self.vertical_menu_expanded:
+            if hasattr(self, "vertical_buttons_rects"):
+                for i, rect in enumerate(self.vertical_buttons_rects):
+                    if rect.contains(pos): 
+                        if i == 3: # Grosor
+                            self.drawing_stroke_width = {2:5, 5:10, 10:20, 20:2}[self.drawing_stroke_width]
+                        else:
+                            self.selected_vertical_tool = i if self.selected_vertical_tool != i else None
+                        self.update(); return 
+            if not self.current_vertical_rect.contains(pos): self.vertical_menu_expanded = False; self._start_anim()
+
+        # Si hay herramienta de dibujo seleccionada, el clic inicia un trazo
+        if self.selected_vertical_tool is not None:
+            # Primero ver si estamos pinchando en la UI (Toolbar)
+            if tr.contains(pos) or self.current_circle_rect.contains(pos) or self.current_vertical_rect.contains(pos):
+                pass # Dejar que procese clicks de UI si fuera necesario (aunque ya retornamos arriba)
+            else:
+                self.is_drawing = True
+                wx, wy = self.screen_to_world(pos.x(), pos.y())
+                tool_name = config.VERTICAL_TOOLS[self.selected_vertical_tool]["name"].lower()
+                self.current_stroke = {
+                    "style": tool_name,
+                    "width": self.drawing_stroke_width,
+                    "points": [(wx, wy)]
+                }
+                return
 
         # Reset dragging flags before starting a new action
         self.dragging = False
@@ -315,11 +386,15 @@ class Canvas(QWidget):
         if self.toolbar_animation_progress > 0.5:
             for i in range(len(config.TOOL_BUTTONS)):
                 if QRectF(tr.x() + config.BUTTON_MARGIN, tr.y() + 60 + i * (config.BUTTON_HEIGHT + 10), tr.width() - config.BUTTON_MARGIN*2, config.BUTTON_HEIGHT).contains(pos): self.hovered_button = i; break
-        
         self.circle_hovered_button = None
         if self.circle_expanded:
             for i, btn in enumerate(self.circle_buttons):
                 if btn.get("current_rect") and btn["current_rect"].contains(pos): self.circle_hovered_button = i; break
+
+        self.vertical_hovered_button = None
+        if self.vertical_menu_expanded and hasattr(self, "vertical_buttons_rects"):
+            for i, rect in enumerate(self.vertical_buttons_rects):
+                if rect.contains(pos): self.vertical_hovered_button = i; break
         
         wx, wy = self.screen_to_world(pos.x(), pos.y())
         dist = ((pos.x() - (tr.x() + tr.width()/2))**2 + (pos.y() - (tr.y() + tr.height()/2))**2)**0.5
@@ -340,7 +415,7 @@ class Canvas(QWidget):
 
             # Cuerpo
             if abs(wx-ox)<(ow/2) and abs(wy-oy)<(oh/2):
-                if obj["type"] in ["ventana", "texto", "markdown"]:
+                if obj["type"] in ["ventana", "texto", "markdown", "dibujo"]:
                     if obj["type"] == "markdown" and wy < (oy - oh/2 + 30 + 15):
                         self.setCursor(Qt.ArrowCursor)
                     else:
@@ -354,6 +429,11 @@ class Canvas(QWidget):
 
         new_e = dist < (config.TOOLBAR_HOVER_DISTANCE_COLLAPSE if self.toolbar_expanded else config.TOOLBAR_HOVER_DISTANCE_EXPAND)
         if new_e != self.toolbar_expanded: self.toolbar_expanded = new_e; self._start_anim()
+
+        if self.is_drawing:
+            wx, wy = self.screen_to_world(pos.x(), pos.y())
+            self.current_stroke["points"].append((wx, wy))
+            self.update(); return
 
         if self.dragging:
             self.offset_x += pos.x() - self.last_mouse_pos.x(); self.offset_y += pos.y() - self.last_mouse_pos.y()
@@ -416,6 +496,31 @@ class Canvas(QWidget):
                 self.update()
 
     def mouseReleaseEvent(self, event): 
+        if self.is_drawing and self.current_stroke:
+            self.is_drawing = False
+            points = self.current_stroke["points"]
+            if len(points) > 2:
+                # Calcular caja y centro para que sea un objeto desplazable
+                wxs = [p[0] for p in points]
+                wys = [p[1] for p in points]
+                min_x, max_x = min(wxs), max(wxs)
+                min_y, max_y = min(wys), max(wys)
+                cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+                
+                # Convertir puntos a locales (relativos al centro)
+                local_points = [(p[0] - cx, p[1] - cy) for p in points]
+                self.current_stroke["points"] = local_points
+                
+                new_obj = {
+                    "type": "dibujo",
+                    "x": cx, "y": cy,
+                    "w": max_x - min_x + 40, "h": max_y - min_y + 40,
+                    "strokes": [self.current_stroke]
+                }
+                self.canvas_objects.append(new_obj)
+            self.current_stroke = None
+            self.update()
+
         self.dragging = self.dragging_object = self.resizing_object = False
         self.selecting_text = False
         self.selection_rect = None

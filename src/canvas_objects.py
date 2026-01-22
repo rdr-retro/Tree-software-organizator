@@ -298,3 +298,75 @@ def draw_markdown_object(painter, obj, index, selected_index, zoom, world_to_scr
     painter.setPen(Qt.white); obj["doc"].documentLayout().draw(painter, ctx); painter.restore()
     
     if selected_index != -1: draw_resize_handle(painter, rect)
+
+def draw_drawing_object(painter, obj, index, selected_index, zoom, world_to_screen, blurred_map=None):
+    """Dibuja un objeto que contiene trazos hechos a mano"""
+    world_x, world_y = obj["x"], obj["y"]
+    screen_x, screen_y = world_to_screen(world_x, world_y)
+    
+    width_world = obj.get("w", 200)
+    height_world = obj.get("h", 200)
+    width, height = width_world * zoom, height_world * zoom
+    
+    rect = QRectF(screen_x - width/2, screen_y - height/2, width, height)
+    
+    s_rect = rect.toRect()
+    if blurred_map and not blurred_map.isNull():
+        painter.save()
+        path = QPainterPath(); path.addRoundedRect(rect, 15, 15); painter.setClipPath(path)
+        refr_zoom = config.GLASS_REFRACTION
+        src_w, src_h = s_rect.width() / refr_zoom, s_rect.height() / refr_zoom
+        src_x, src_y = s_rect.x() + (s_rect.width() - src_w) / 2, s_rect.y() + (s_rect.height() - src_h) / 2
+        src_rect = QRect(int(src_x), int(src_y), int(src_w), int(src_h))
+        ab = config.GLASS_ABERRATION
+        painter.setOpacity(0.4)
+        painter.drawPixmap(s_rect.translated(-ab, 0), blurred_map, src_rect)
+        painter.drawPixmap(s_rect.translated(ab, 0), blurred_map, src_rect)
+        painter.setOpacity(1.0); painter.drawPixmap(s_rect, blurred_map, src_rect)
+        painter.restore()
+
+    bg_color = obj.get("personal_color", QColor(30, 30, 45, 120))
+    painter.setBrush(QBrush(bg_color))
+    border_color = QColor(255, 255, 255, 100); border_width = 1.5
+    if selected_index != -1:
+        border_color = QColor(0, 120, 215, 255); border_width = 3
+    painter.setPen(QPen(border_color, border_width)); painter.drawRoundedRect(rect, 15, 15)
+
+    # Dibujar los trazos
+    strokes = obj.get("strokes", [])
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    
+    # Clip para que no se salga del cuadrado
+    path_clip = QPainterPath(); path_clip.addRoundedRect(rect, 15, 15); painter.setClipPath(path_clip)
+    
+    for stroke in strokes:
+        points = stroke.get("points", [])
+        if len(points) < 2: continue
+        
+        style = stroke.get("style", "lapiz")
+        width = stroke.get("width", 2) * zoom
+        color = QColor(stroke.get("color", Qt.white))
+        
+        if style == "rotulador":
+            color.setAlpha(150) # Translucido
+            width *= 2
+        elif style == "borrador":
+            # El borrador aquí actúa como pintar del color de fondo o transparente si pudiéramos
+            # pero como es un objeto, pintamos con un color que simule borrar sobre el vidrio
+            color = QColor(bg_color.red(), bg_color.green(), bg_color.blue(), 255)
+            width *= 2
+
+        painter.setPen(QPen(color, width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        
+        poly = QPolygonF()
+        for i, (wx, wy) in enumerate(points):
+            # wx, wy son relativos al CENTRO del objeto para que se muevan con él
+            px, py = screen_x + wx * zoom, screen_y + wy * zoom
+            poly.append(QPointF(px, py))
+        
+        painter.drawPolyline(poly)
+    
+    painter.restore()
+    
+    if selected_index != -1: draw_resize_handle(painter, rect)

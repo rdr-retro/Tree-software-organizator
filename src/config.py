@@ -25,6 +25,10 @@ TOOLBAR_HOVER_DISTANCE_COLLAPSE = 250
 CIRCLE_EXPANDED_WIDTH = 320
 CIRCLE_EXPANDED_HEIGHT = 720
 
+# Configuración del Menú Vertical (NUEVO)
+VERTICAL_MENU_EXPANDED_WIDTH = 50
+VERTICAL_MENU_EXPANDED_HEIGHT = 240
+
 # Herramientas
 TOOL_BUTTONS = [
     {"name": "Cuadrado", "icon": "□"},
@@ -32,5 +36,13 @@ TOOL_BUTTONS = [
     {"name": "Ventana", "icon": "▢"},
     {"name": "Texto en pantalla", "icon": "T"}
 ]
+
+VERTICAL_TOOLS = [
+    {"name": "Lapiz", "icon": "✎"},
+    {"name": "Rotulador", "icon": "✒"},
+    {"name": "Borrador", "icon": "⌫"},
+    {"name": "Grosor", "icon": "≡"}
+]
+
 BUTTON_HEIGHT = 50
 BUTTON_MARGIN = 15
